@@ -215,20 +215,20 @@ _render_loop:
         LD      E, (IX+2)
         LD      D, (IX+3)
 
-        ; Draw top row (5 chars)
-        LD      BC, 3
+        ; Copy the 4-character screen footprint from the 5-byte template row.
+        ; Byte 0 is the leading blank column, bytes 1-3 hold the 3 visible chars.
+        LD      BC, 4
         LDIR
 
-        ; Draw mid row (+64 down)
-        PUSH    HL
+        ; Draw lower row (+64 down), skipping the trailing blank from the top row.
+        INC     HL
         LD      A, E
         ADD     A, 64
         LD      E, A
         JR      NC, _rm_nc
         INC     D
 _rm_nc:
-        POP     HL
-        LD      BC, 3
+        LD      BC, 4
         LDIR
 
 
@@ -252,85 +252,44 @@ _render_advance:
 ; ============================================================
 GetSpritePtr:
         LD      C, A
-        ; Extract type
-        LD      A, C
-        AND     PK_TYPE
-        LD      B, A
-
-        ; Extract state
-        LD      A, C
-        AND     PK_STATE
-        SRL     A
-        SRL     A
-        SRL     A
-        SRL     A
-        SRL     A
-        SRL     A
-        LD      D, A
-
-        ; Extract yPos
-        LD      A, C
-        AND     PK_YPOS
-        SRL     A
-        SRL     A
-        SRL     A
-        SRL     A
-        LD      E, A
-
-        ; HL = SPRITE_BASE + type*36 + state*18 + yPos*6
         LD      HL, SPRITE_BASE
 
-        ; type * 36
-        LD      A, B
-        OR      A
-        JR      Z, _sp1
-        ADD     A, A
-        ADD     A, A
-        PUSH    AF
-        LD      A, B
-        ADD     A, A
-        ADD     A, A
-        ADD     A, A
-        ADD     A, A
-        POP     BC
-        ADD     A, C
-        ADD     A, L
-        LD      L, A
-        JR      NC, _sp1
-        INC     H
-_sp1:
+        ; Layout: type*60 + state*30 + yPos*10
+        LD      A, C
+        AND     PK_TYPE
+        CP      1
+        JR      Z, _sp_add_type1
+        CP      2
+        JR      Z, _sp_add_type2
+        JR      _sp_state
+_sp_add_type1:
+        LD      DE, 60
+        ADD     HL, DE
+        JR      _sp_state
+_sp_add_type2:
+        LD      DE, 120
+        ADD     HL, DE
 
-        ; state * 18
-        LD      A, D
-        OR      A
-        JR      Z, _sp2
-        ADD     A, A
-        PUSH    AF
-        ADD     A, A
-        ADD     A, A
-        ADD     A, A
-        POP     BC
-        ADD     A, C
-        ADD     A, L
-        LD      L, A
-        JR      NC, _sp2
-        INC     H
-_sp2:
+_sp_state:
+        LD      A, C
+        AND     PK_STATE
+        JR      Z, _sp_ypos
+        LD      DE, 30
+        ADD     HL, DE
 
-        ; yPos * 6
-        LD      A, E
-        OR      A
-        JR      Z, _sp3
-        ADD     A, A
-        PUSH    AF
-        ADD     A, A
-        POP     BC
-        ADD     A, C
-        ADD     A, L
-        LD      L, A
-        JR      NC, _sp3
-        INC     H
-_sp3:
+_sp_ypos:
+        LD      A, C
+        AND     PK_YPOS
+        JR      Z, _sp_done
+        CP      16
+        JR      Z, _sp_add_y1
+        LD      DE, 20
+        ADD     HL, DE
+        JR      _sp_done
+_sp_add_y1:
+        LD      DE, 10
+        ADD     HL, DE
+_sp_done:
         RET
 
 ; ============================================================
@@ -1065,75 +1024,77 @@ LIVES:            DB      3
 INV_MATRIX:       DS      MAX_INV * INV_ENTRY
 
 ; ============================================================
-; Sprite Data - 3 types, 2 states, 3 yPos, 3 chars per row
-; Layout per type (36 bytes):
-;   S0_Y0: top3 + bot3
-;   S0_Y1: top3 + bot3
-;   S0_Y2: top3 + bot3
-;   S1_Y0: top3 + bot3
-;   S1_Y1: top3 + bot3
-;   S1_Y2: top3 + bot3
+; Sprite Data - 3 types, 2 states, 3 yPos variants
+; Each variant stores 5 bytes for the upper row and 5 bytes for the lower row.
+; The renderer copies 4 bytes from each row: leading blank + 3 visible chars.
+; Layout per type (60 bytes):
+;   S0_Y0: top5 + bot5
+;   S0_Y1: top5 + bot5
+;   S0_Y2: top5 + bot5
+;   S1_Y0: top5 + bot5
+;   S1_Y1: top5 + bot5
+;   S1_Y2: top5 + bot5
 ; ============================================================
         ORG     9000H
 SPRITE_BASE:
-; Sprite Data - 3 types, 2 states, 3 yPos, 5x2 chars
+; Sprite Data - 3 types, 2 states, 3 yPos, 5 bytes per row
 ; Layout: type*60 + state*30 + yPos*10
 
-; Type 0
+; Type 0 - Squid
         DB      128,174,159,133,128
         DB      128,129,128,130,128
 
-        DB      128,174,159,133,128
-        DB      128,129,128,130,128
+        DB      128,140,191,139,128
+        DB      128,130,128,130,128
 
-        DB      128,174,159,133,128
-        DB      128,129,128,130,128
+        DB      128,144,176,144,128
+        DB      128,175,143,135,128
 
         DB      128,160,158,164,128
         DB      128,128,129,129,128
 
-        DB      128,160,158,164,128
-        DB      128,128,129,129,128
+        DB      128,128,188,172,128
+        DB      128,129,128,130,128
 
-        DB      128,160,158,164,128
-        DB      128,128,129,129,128
+        DB      128,128,144,128,128
+        DB      128,176,175,139,128
 
-; Type 1
-        DB      128,128,174,159,128
+; Type 1 - Crab
+        DB      128,138,191,171,128
+        DB      128,131,128,131,128
+
+        DB      128,128,174,164,128
+        DB      128,143,159,143,128
+
+        DB      128,128,138,136,128
+        DB      128,175,191,175,128
+
+        DB      128,130,191,186,128
         DB      128,128,129,128,128
 
-        DB      128,128,174,159,128
-        DB      128,128,129,128,128
+        DB      128,128,175,170,128
+        DB      128,130,128,130,128
 
-        DB      128,128,174,159,128
-        DB      128,128,129,128,128
-
-        DB      128,160,158,128,128
-        DB      128,128,129,128,128
-
-        DB      128,160,158,128,128
-        DB      128,128,129,128,128
-
-        DB      128,160,158,128,128
-        DB      128,128,129,128,128
-
-; Type 2
-        DB      128,128,159,159,128
         DB      128,128,130,130,128
+        DB      128,159,191,159,128
 
-        DB      128,128,159,159,128
-        DB      128,128,130,130,128
+; Type 2 - Octopus
+        DB      128,140,191,140,128
+        DB      128,129,128,130,128
 
-        DB      128,128,159,159,128
-        DB      128,128,130,130,128
+        DB      128,128,172,168,128
+        DB      128,143,143,139,128
 
-        DB      128,159,159,128,128
-        DB      128,130,130,128,128
+        DB      128,128,136,128,128
+        DB      128,175,191,175,128
 
-        DB      128,159,159,128,128
-        DB      128,130,130,128,128
+        DB      128,128,188,168,128
+        DB      128,129,128,130,128
 
-        DB      128,159,159,128,128
-        DB      128,130,130,128,128
+        DB      128,128,168,176,128
+        DB      128,130,159,138,128
+
+        DB      128,128,128,144,128
+        DB      128,168,191,175,128
 
         END     START
