@@ -18,8 +18,9 @@ INV_COLS        EQU     11
 INV_ROWS        EQU     5
 MAX_INV         EQU     55
 INV_SPACING     EQU     4
-INV_START_COL   EQU     8
-INV_START_ROW   EQU     2
+; Templates include a leading blank char; col 12 renders the first visible char at col 13.
+INV_START_COL   EQU     12
+INV_START_ROW   EQU     1
 DEFENSE_ROW     EQU     14
 PLAYER_ROW      EQU     15
 PLAYER_COL      EQU     30
@@ -667,11 +668,21 @@ _mr_loop:
         CP      INV_ALIVE
         JR      NZ, _mr_next
         LD      A, (IX+1)
-        XOR     PK_STATE
+        AND     PK_STATE
+        JR      Z, _mr_set_state
+        LD      A, (IX+1)
+        AND     191
         LD      (IX+1), A
         LD      A, (IX+2)
         INC     A
         LD      (IX+2), A
+        JR      NZ, _mr_next
+        INC     (IX+3)
+        JR      _mr_next
+_mr_set_state:
+        LD      A, (IX+1)
+        OR      PK_STATE
+        LD      (IX+1), A
 _mr_next:
         PUSH    IX
         POP     HL
@@ -689,11 +700,22 @@ _ml_loop:
         CP      INV_ALIVE
         JR      NZ, _ml_next
         LD      A, (IX+1)
-        XOR     PK_STATE
+        AND     PK_STATE
+        JR      NZ, _ml_clear_state
+        LD      A, (IX+1)
+        OR      PK_STATE
         LD      (IX+1), A
         LD      A, (IX+2)
         DEC     A
         LD      (IX+2), A
+        CP      255
+        JR      NZ, _ml_next
+        DEC     (IX+3)
+        JR      _ml_next
+_ml_clear_state:
+        LD      A, (IX+1)
+        AND     191
+        LD      (IX+1), A
 _ml_next:
         PUSH    IX
         POP     HL
@@ -1083,60 +1105,60 @@ SPRITE_BASE:
 ; Layout: type*60 + state*30 + yPos*10
 
 ; Type 0 - Squid
-        DB      128,174,159,133,128
-        DB      128,129,128,130,128
+        DB      128,184,185,144,128
+        DB      128,130,130,128,128
 
-        DB      128,140,191,139,128
-        DB      128,130,128,130,128
+        DB      128,160,164,128,128
+        DB      128,139,139,129,128
 
         DB      128,144,176,144,128
-        DB      128,175,143,135,128
+        DB      128,174,174,132,128
 
-        DB      128,160,158,164,128
-        DB      128,128,129,129,128
-
-        DB      128,128,188,172,128
-        DB      128,129,128,130,128
-
-        DB      128,128,144,128,128
-        DB      128,176,175,139,128
-
-; Type 1 - Crab
-        DB      128,138,191,171,128
-        DB      128,131,128,131,128
-
-        DB      128,128,174,164,128
-        DB      128,143,159,143,128
-
-        DB      128,128,138,136,128
-        DB      128,175,191,175,128
-
-        DB      128,130,191,186,128
-        DB      128,128,129,128,128
-
-        DB      128,128,175,170,128
+        DB      128,128,182,148,128
         DB      128,130,128,130,128
 
-        DB      128,128,130,130,128
-        DB      128,159,191,159,128
+        DB      128,128,152,144,128
+        DB      128,136,131,137,128
+
+        DB      128,128,160,128,128
+        DB      128,160,141,165,128
+
+; Type 1 - Crab
+        DB      128,182,166,148,128
+        DB      128,130,130,128,128
+
+        DB      128,152,152,144,128
+        DB      128,139,138,129,128
+
+        DB      128,160,160,128,128
+        DB      128,173,169,133,128
+
+        DB      128,136,185,153,128
+        DB      128,130,128,130,128
+
+        DB      128,160,164,164,128
+        DB      128,136,131,137,128
+
+        DB      128,128,144,144,128
+        DB      128,162,142,166,128
 
 ; Type 2 - Octopus
-        DB      128,140,191,140,128
-        DB      128,129,128,130,128
+        DB      128,182,183,148,128
+        DB      128,129,129,129,128
 
-        DB      128,128,172,168,128
-        DB      128,143,143,139,128
+        DB      128,152,156,144,128
+        DB      128,135,135,133,128
 
-        DB      128,128,136,128,128
-        DB      128,175,191,175,128
+        DB      128,160,176,128,128
+        DB      128,157,157,149,128
 
-        DB      128,128,188,168,128
-        DB      128,129,128,130,128
+        DB      128,168,187,185,128
+        DB      128,128,129,129,128
 
-        DB      128,128,168,176,128
-        DB      128,130,159,138,128
+        DB      128,160,172,164,128
+        DB      128,130,135,135,128
 
-        DB      128,128,128,144,128
-        DB      128,168,191,175,128
+        DB      128,128,176,144,128
+        DB      128,138,158,158,128
 
         END     START
