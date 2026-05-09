@@ -20,9 +20,10 @@ MAX_INV         EQU     55
 INV_SPACING     EQU     4
 INV_START_COL   EQU     8
 INV_START_ROW   EQU     2
-PLAYER_ROW      EQU     14
+DEFENSE_ROW     EQU     14
+PLAYER_ROW      EQU     15
 PLAYER_COL      EQU     30
-PLAYER_WIDTH    EQU     4
+PLAYER_WIDTH    EQU     3
 
 CHAR_BLANK      EQU     128
 
@@ -178,18 +179,7 @@ _row_to_addr:
 InitPlayer:
         LD      A, PLAYER_COL
         LD      (PLAYER_X), A
-        ; Draw 4 static player ships
-        LD      A, 16
-        LD      (PLAYER_X), A
-        CALL    DrawPlayer
-        LD      A, 32
-        LD      (PLAYER_X), A
-        CALL    DrawPlayer
-        LD      A, 48
-        LD      (PLAYER_X), A
-        CALL    DrawPlayer
-        LD      A, 60
-        LD      (PLAYER_X), A
+        CALL    DrawDefenses
         CALL    DrawPlayer
         RET
 
@@ -338,6 +328,47 @@ _sp_done:
         RET
 
 ; ============================================================
+; DrawDefenses / DrawDefenseAt
+; ============================================================
+DrawDefenses:
+        LD      A, 16
+        CALL    DrawDefenseAt
+        LD      A, 32
+        CALL    DrawDefenseAt
+        LD      A, 48
+        CALL    DrawDefenseAt
+        LD      A, 60
+        CALL    DrawDefenseAt
+        RET
+
+DrawDefenseAt:
+        PUSH    AF
+        SUB     2
+        LD      C, A
+        LD      B, DEFENSE_ROW - 1
+        CALL    ScreenAddr
+        LD      (HL), 184
+        INC     HL
+        LD      (HL), 191
+        INC     HL
+        LD      (HL), 191
+        INC     HL
+        LD      (HL), 180
+        POP     AF
+        SUB     2
+        LD      C, A
+        LD      B, DEFENSE_ROW
+        CALL    ScreenAddr
+        LD      (HL), 143
+        INC     HL
+        LD      (HL), 133
+        INC     HL
+        LD      (HL), 138
+        INC     HL
+        LD      (HL), 143
+        RET
+
+; ============================================================
 ; DrawPlayer / ErasePlayer
 ; ============================================================
 DrawPlayer:
@@ -345,26 +376,11 @@ DrawPlayer:
         LD      C, A
         LD      B, PLAYER_ROW
         CALL    ScreenAddr
-        LD      (HL), 128
+        LD      (HL), 184
         INC     HL
-        LD      (HL), 182
+        LD      (HL), 189
         INC     HL
-        LD      (HL), 182
-        INC     HL
-        LD      (HL), 128
-        LD      A, L
-        SUB     64
-        LD      L, A
-        JR      NC, _dp_nc
-        DEC     H
-_dp_nc:
-        LD      (HL), 128
-        INC     HL
-        LD      (HL), 129
-        INC     HL
-        LD      (HL), 129
-        INC     HL
-        LD      (HL), 128
+        LD      (HL), 144
         RET
 
 ErasePlayer:
@@ -372,21 +388,6 @@ ErasePlayer:
         LD      C, A
         LD      B, PLAYER_ROW
         CALL    ScreenAddr
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        LD      A, L
-        SUB     64
-        LD      L, A
-        JR      NC, _ep_nc
-        DEC     H
-_ep_nc:
-        LD      (HL), CHAR_BLANK
-        INC     HL
         LD      (HL), CHAR_BLANK
         INC     HL
         LD      (HL), CHAR_BLANK
@@ -819,7 +820,7 @@ UpdateTorpedo:
         LD      HL, TORP_Y
         INC     (HL)
         LD      A, (HL)
-        CP      PLAYER_ROW
+        CP      PLAYER_ROW + 1
         JR      C, _ut_check
         XOR     A
         LD      (TORP_ACTIVE), A
@@ -837,14 +838,11 @@ _ut_check:
         LD      C, A
         LD      B, PLAYER_ROW
         CALL    ScreenAddr
-        ; Check if torpedo pos overlaps player (4 chars wide)
+        ; Check if torpedo pos overlaps player (3 chars wide)
         LD      A, D
         CP      H
         JR      NZ, _ut_miss
         LD      A, E
-        CP      L
-        JR      Z, _ut_hit
-        INC     L
         CP      L
         JR      Z, _ut_hit
         INC     L
@@ -860,10 +858,9 @@ _ut_hit:
         CALL    ExplosionSound
         XOR     A
         LD      (TORP_ACTIVE), A
-        ; Player hit - for now just reset position
+        CALL    ErasePlayer
         LD      A, PLAYER_COL
         LD      (PLAYER_X), A
-        CALL    ErasePlayer
         CALL    DrawPlayer
         RET
 
