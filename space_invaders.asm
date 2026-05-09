@@ -65,6 +65,7 @@ START:
         CALL    DrawLives
 
 MainLoop:
+        CALL    EraseAllInvaders
         CALL    RenderAllInvaders
         CALL    RenderBullet
         CALL    RenderTorpedo
@@ -115,9 +116,9 @@ _init_set_type_1:
 _init_set_type:
         LD      (INV_TYPE_TMP), A
 
-        ; Screen addr: row_index * 3 + INV_START_ROW (2 tall + 1 gap)
+        ; Screen addr: row_index * 2 + INV_START_ROW
+        ; Reference formation uses 2 character rows between invader rows.
         LD      A, B
-        ADD     A, B
         ADD     A, B
         ADD     A, INV_START_ROW
         CALL    _row_to_addr
@@ -245,6 +246,50 @@ _render_advance:
         PUSH    HL
         POP     IX
         DJNZ    _render_loop
+        RET
+
+; ============================================================
+; EraseAllInvaders
+; Clears every stored invader footprint before redrawing.
+; ============================================================
+EraseAllInvaders:
+        LD      IX, INV_MATRIX
+        LD      B, MAX_INV
+
+_erase_loop:
+        LD      E, (IX+2)
+        LD      D, (IX+3)
+        PUSH    DE
+        POP     HL
+        LD      (HL), CHAR_BLANK
+        INC     HL
+        LD      (HL), CHAR_BLANK
+        INC     HL
+        LD      (HL), CHAR_BLANK
+        INC     HL
+        LD      (HL), CHAR_BLANK
+
+        LD      A, L
+        ADD     A, 61
+        LD      L, A
+        JR      NC, _erase_row2
+        INC     H
+_erase_row2:
+        LD      (HL), CHAR_BLANK
+        INC     HL
+        LD      (HL), CHAR_BLANK
+        INC     HL
+        LD      (HL), CHAR_BLANK
+        INC     HL
+        LD      (HL), CHAR_BLANK
+
+        PUSH    IX
+        POP     HL
+        LD      DE, 4
+        ADD     HL, DE
+        PUSH    HL
+        POP     IX
+        DJNZ    _erase_loop
         RET
 
 ; ============================================================
