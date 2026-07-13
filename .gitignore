@@ -1,5 +1,7 @@
 .DS_Store
 trs80-text-*.bin
+trs80-printer.txt
+hiscore.dat
 clean_shot_*.png
 trs80_game.png
 zout/*.wav

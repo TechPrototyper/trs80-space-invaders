@@ -140,6 +140,7 @@ RESTART:
         LD      (SCORE_D+2), A
         LD      (SCORE_D+3), A
         LD      (GAME_OVER), A
+        LD      (WAVE_NUM), A           ; InitWave bumps it to 1
         LD      A, 3
         LD      (LIVES), A
         CALL    DrawHUD
@@ -221,8 +222,13 @@ _iw_exnext:
         LD      (FORM_COL), A
         LD      A, FORM_ROW0
         LD      (FORM_ROW), A
-        LD      A, 30
-        LD      (FORM_CNT), A           ; grace period before first step
+        LD      A, 14
+        LD      (FORM_CNT), A           ; grace; accu needs 16 more frames,
+                                        ; so step 1 lands on frame 30 as before
+        LD      HL, 0
+        LD      (FORM_ACC), HL
+        LD      HL, WAVE_NUM
+        INC     (HL)
         LD      A, INV_COLS * INV_ROWS
         LD      (ALIVE_CNT), A
         LD      A, PLAYER_X0
@@ -671,6 +677,23 @@ ROW_TYPE:
 TYPE_PTS:
         DB      3, 2, 1                 ; tens: 30 / 20 / 10 points
 
+; Torpedo reload scale per wave (1..12+), 32 = 1.0, /1.2 each wave
+TORP_SCL:
+        DB      32, 27, 22, 18, 15, 13, 11, 9, 8, 7, 6, 5
+
+; March speed by ALIVE_CNT (index 1..55), 8.8 fixed-point px/frame.
+; Generated curve: per-kill delta grows from ~1.6 to ~6 units, i.e.
+; gentle early, brutal with the last few invaders.
+; 55 alive = 1 step/15 frames, 1 alive = 1 step/1.1 frames.
+FORM_SPD_TBL:
+        DB      0, 230, 224, 217, 211, 205, 199, 194
+        DB      188, 182, 176, 171, 166, 160, 155, 150
+        DB      145, 140, 135, 130, 125, 121, 116, 112
+        DB      107, 103, 99, 95, 91, 87, 83, 80
+        DB      76, 72, 69, 66, 62, 59, 56, 53
+        DB      50, 47, 45, 42, 39, 37, 34, 32
+        DB      30, 28, 26, 24, 22, 20, 19, 17
+
 ; ============================================================
 ; UpdateFormation - one pixel step every FORM_CNT frames
 ; ============================================================
@@ -678,15 +701,32 @@ UpdateFormation:
         LD      A, (ALIVE_CNT)
         OR      A
         RET     Z
-        LD      HL, FORM_CNT
+        LD      HL, FORM_CNT            ; wave-start grace frames
+        LD      A, (HL)
+        OR      A
+        JR      Z, _uf_run
         DEC     (HL)
-        RET     NZ
-        ; reload cadence: faster as invaders die
+        RET
+_uf_run:
+        ; speed accumulator: every kill nudges the pace up a little
+        ; (8.8 fixed-point pixels/frame from FORM_SPD_TBL[ALIVE_CNT])
         LD      A, (ALIVE_CNT)
-        SRL     A
-        SRL     A
-        ADD     A, 2
-        LD      (HL), A
+        LD      E, A
+        LD      D, 0
+        LD      HL, FORM_SPD_TBL
+        ADD     HL, DE
+        LD      E, (HL)
+        LD      HL, (FORM_ACC)
+        LD      D, 0
+        ADD     HL, DE
+        LD      A, H
+        OR      A
+        JR      NZ, _uf_step
+        LD      (FORM_ACC), HL
+        RET
+_uf_step:
+        LD      H, 0                    ; consume one whole step
+        LD      (FORM_ACC), HL
         CALL    MarchTick
         ; step
         LD      A, (FORM_DIR)
@@ -753,10 +793,18 @@ _uf_descend:
         LD      (FORM_YSUB), A
         JP      DrawFormation
 _uf_rollover:
-        ; invasion check: bottom sprite pixel would touch the shields
+        ; invasion check: the bottommost ALIVE invader's sprite bottom
+        ; (char row FORM_ROW + 2*bottom + 1) would touch the shield row
+        CALL    FindBottomRow           ; E = bottom alive formation row
+        LD      A, E
+        ADD     A, A
+        LD      C, A
+        LD      A, SHIELD_ROW - 1
+        SUB     C                       ; threshold for FORM_ROW+1
+        LD      C, A
         LD      A, (FORM_ROW)
         INC     A
-        CP      4                       ; row 4 + ysub 0 -> pixel row 39
+        CP      C
         JR      C, _uf_desc_ok
         LD      A, 1
         LD      (GAME_OVER), A
@@ -809,6 +857,25 @@ _fe_next:
         LD      A, C
         CP      INV_COLS
         JR      NZ, _fe_col
+        RET
+
+; FindBottomRow - E = bottommost formation row (0..4) holding a
+; live invader. Requires at least one alive.
+FindBottomRow:
+        LD      HL, ALIVE_ARR + INV_COLS * INV_ROWS - 1
+        LD      E, INV_ROWS - 1
+_fbr_row:
+        LD      B, INV_COLS
+_fbr_col:
+        LD      A, (HL)
+        OR      A
+        RET     NZ
+        DEC     HL
+        DJNZ    _fbr_col
+        DEC     E
+        BIT     7, E
+        JR      Z, _fbr_row
+        LD      E, 0                    ; unreachable while ALIVE_CNT > 0
         RET
 
 ; EraseTopStripes - on char-row rollover the top char row of every
@@ -949,10 +1016,49 @@ MaybeFireTorpedo:
         LD      HL, TORP_CNT
         DEC     (HL)
         RET     NZ
-        ; reload pause 25..56 frames (pseudo random)
+        ; reload pause 25..56 frames, scaled by wave: rate +20% per
+        ; wave => reload * (32 / 1.2^(wave-1)) / 32, table-capped
         LD      A, R
         AND     31
         ADD     A, 25
+        LD      E, A
+        LD      D, 0
+        PUSH    HL
+        LD      A, (WAVE_NUM)
+        CP      13
+        JR      C, _mft_wcap
+        LD      A, 12
+_mft_wcap:
+        LD      C, A
+        LD      B, 0
+        LD      HL, TORP_SCL - 1
+        ADD     HL, BC
+        LD      A, (HL)                 ; scale factor, /32
+        LD      HL, 0
+        LD      B, 8
+_mft_mul:
+        ADD     HL, HL
+        RLCA
+        JR      NC, _mft_mnc
+        ADD     HL, DE
+_mft_mnc:
+        DJNZ    _mft_mul                ; HL = base * scale
+        LD      A, L
+        SRL     H
+        RRA
+        SRL     H
+        RRA
+        SRL     H
+        RRA
+        SRL     H
+        RRA
+        SRL     H
+        RRA                             ; A = HL >> 5
+        OR      A
+        JR      NZ, _mft_rok
+        LD      A, 1
+_mft_rok:
+        POP     HL
         LD      (HL), A
         ; pick a column 0..10
         LD      A, R
@@ -1445,6 +1551,7 @@ _go_new:
         LD      DE, HISCORE_D
         LD      BC, 4
         LDIR
+        CALL    PrintHiScore            ; persist via printer capture
 _go_msg:
         ; clear a window so the text is readable over the battlefield
         LD      B, 6
@@ -1480,6 +1587,52 @@ _go_prs:
         BIT     7, A
         JR      Z, _go_prs
         JP      Splash
+
+; ============================================================
+; PrintHiScore - write "HSnnnn\r" to the printer (37E8H, memory
+; mapped on Model I and III). tools/play.py captures the printer
+; into a file and feeds the score back on the next launch.
+; ============================================================
+PRINTER         EQU     37E8H
+
+PrintHiScore:
+        LD      A, 'H'
+        CALL    PrintChar
+        LD      A, 'S'
+        CALL    PrintChar
+        LD      HL, HISCORE_D
+        LD      B, 4
+_phs_loop:
+        LD      A, (HL)
+        ADD     A, '0'
+        CALL    PrintChar
+        INC     HL
+        DJNZ    _phs_loop
+        LD      A, 13
+        ; fall through
+; PrintChar - send A to the printer. Model I maps it at 37E8H,
+; Model III drives port 0F8H; we poll both status views and then
+; write both ways (the inactive one is harmless on either machine).
+PrintChar:
+        PUSH    BC
+        LD      C, A
+        LD      B, 0                    ; 256 tries, then send anyway
+_pc_wait:
+        LD      A, (PRINTER)
+        AND     0F0H
+        CP      30H                     ; Model I ready pattern
+        JR      Z, _pc_send
+        IN      A, (0F8H)
+        AND     0F0H
+        CP      30H                     ; Model III ready pattern
+        JR      Z, _pc_send
+        DJNZ    _pc_wait
+_pc_send:
+        LD      A, C
+        LD      (PRINTER), A
+        OUT     (0F8H), A
+        POP     BC
+        RET
 
 ; ============================================================
 ; ScreenAddr: B=row, C=col -> HL = SCREEN + row*64 + col
@@ -1561,6 +1714,11 @@ MarchTick:
         ADD     HL, DE
         LD      D, (HL)
         LD      B, 2                    ; pulses
+        LD      A, (ALIVE_CNT)
+        CP      5
+        JR      NC, _mt_loop
+        LD      B, 1                    ; endgame: steps come every frame,
+                                        ; keep the tick from eating time
 _mt_loop:
         LD      A, 1
         OUT     (SOUND_PORT), A
@@ -1701,6 +1859,8 @@ UFO_DIR:        DB      0
 UFO_PH:         DB      0
 UFO_CNT:        DB      0
 MARCH_IX:       DB      0
+WAVE_NUM:       DB      0
+FORM_ACC:       DW      0
 HISCORE_D:      DB      0, 0, 0, 0
 EXPL_TBL:                               ; NEXPL x (timer,stage,row,col,kind)
         DB      0, 0, 0, 0, 0
