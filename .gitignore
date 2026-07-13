@@ -1,14 +1,31 @@
-.DS_Store
+# build output
+zout/
+.zout/
+*.bak
+
+# emulator captures & runtime state
 trs80-text-*.bin
 trs80-printer.txt
+trs80-*.png
+trs80-*.gif
+trs80-*.avi
 hiscore.dat
 clean_shot_*.png
 trs80_game.png
-zout/*.wav
-zout/*.cas
-zout/*.ams
-zout/*.cim
-zout/*.hex
-zout/*.mds
-zout/*.tap
-zout/*.cmd
+frames/
+
+# local reference material (not for the public repo)
+oldproj/*
+!oldproj/StartGame.png
+!oldproj/StartGameOneMoveRight.png
+BRIEFING.md
+CONTEXT_PROMPT*.md
+HANDOFF*.md
+HANDOVER.md
+REFACTOR_PLAN.md
+
+# system / tooling
+.DS_Store
+.claude/
+.mypy_cache/
+__pycache__/

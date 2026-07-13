@@ -2,11 +2,13 @@
 """Full-screen validation: reconstruct the expected screen from the
 detected formation position and compare cell-by-cell.
 Flags any residue/garbage the incremental rendering left behind."""
+import os
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import glob, sys
 from extract_grid import extract
 
-m0 = extract('/Users/timw/Projects/z80test/oldproj/StartGame.png')
-m1 = extract('/Users/timw/Projects/z80test/oldproj/StartGameOneMoveRight.png')
+m0 = extract(os.path.join(_ROOT, 'oldproj/StartGame.png'))
+m1 = extract(os.path.join(_ROOT, 'oldproj/StartGameOneMoveRight.png'))
 
 REGIONS = {0: 3, 1: 9, 2: 21}
 def window(m, top): return [m[top+r][26:32] for r in range(6)]

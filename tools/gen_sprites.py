@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Generate all 18 sprite variants (3 types x 2 states x 3 y-shifts)
+import os
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from the target screenshot pixel matrices. Emits zmac DB lines.
 Layout: type*60 + state*30 + ysub*10; 5 bytes top row + 5 bytes bottom."""
 from extract_grid import extract
 
-m0 = extract('/Users/timw/Projects/z80test/oldproj/StartGame.png')
-m1 = extract('/Users/timw/Projects/z80test/oldproj/StartGameOneMoveRight.png')
+m0 = extract(os.path.join(_ROOT, 'oldproj/StartGame.png'))
+m1 = extract(os.path.join(_ROOT, 'oldproj/StartGameOneMoveRight.png'))
 
 # 6x6 pixel window of the first invader of each type (char cols 13-15 = px 26-31)
 # squid: char rows 1-2 (px 3-8), crab: rows 3-4 (px 9-14), octopus: rows 7-8 (px 21-26)

@@ -2,6 +2,8 @@
 """Compare emulator VRAM dumps against target screenshots (rows 1-15,
 cols 5-63). Row 0 is the UFO lane; cols 0-4 are the status sidebar
 (SCORE/P1/reserve ships) - neither exists in the target images."""
+import os
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 sys.path.insert(0, '.')
 from extract_grid import extract, to_chars
@@ -34,8 +36,8 @@ def compare(dump, target, label):
             print(f"  row {r} col {c}: got {d}, want {t}")
     return not diffs
 
-t_start = to_chars(extract('/Users/timw/Projects/z80test/oldproj/StartGame.png'))
-t_move1 = to_chars(extract('/Users/timw/Projects/z80test/oldproj/StartGameOneMoveRight.png'))
+t_start = to_chars(extract(os.path.join(_ROOT, 'oldproj/StartGame.png')))
+t_move1 = to_chars(extract(os.path.join(_ROOT, 'oldproj/StartGameOneMoveRight.png')))
 
 dumps = [load_dump(f'trs80-text-{i}.bin') for i in range(5)]
 
