@@ -39,6 +39,9 @@ PLAYER_XMAX     EQU     61
 BULLET_CH       EQU     149     ; left pixel column lit
 TORP_CH         EQU     170     ; right pixel column lit
 
+UFO_XMIN        EQU     11      ; row-0 span clear of SCORE text
+UFO_XMAX        EQU     50      ; sprite is 3 wide, LIVES starts at 54
+
 ; ============================================================
 ; Entry
 ; ============================================================
@@ -65,6 +68,7 @@ MainLoop:
         CALL    UpdateFormation
         CALL    UpdateTorpedo
         CALL    MaybeFireTorpedo
+        CALL    UpdateUFO
         LD      A, (WAVE_DONE)
         OR      A
         CALL    NZ, InitWave
@@ -89,6 +93,13 @@ Cls:
 ; InitWave - fresh formation, shields, player, projectiles
 ; ============================================================
 InitWave:
+        LD      A, (UFO_ACT)
+        OR      A
+        CALL    NZ, EraseUFO            ; row 0 is not part of the area clear
+        XOR     A
+        LD      (UFO_ACT), A
+        LD      (UFO_PH), A
+        CALL    UFOReload
         XOR     A
         LD      (WAVE_DONE), A
         LD      (BUL_ACT), A
@@ -350,7 +361,17 @@ UpdateBullet:
 _ub_die:
         XOR     A
         LD      (BUL_ACT), A
-        RET
+        ; bullet crossed into row 0 - did it hit the UFO?
+        LD      A, (UFO_ACT)
+        OR      A
+        RET     Z
+        LD      A, (UFO_X)
+        LD      C, A
+        LD      A, (BUL_X)
+        SUB     C
+        CP      3
+        RET     NC
+        JP      KillUFO
 _ub_hit:
         XOR     A
         LD      (BUL_ACT), A
@@ -890,6 +911,102 @@ _ut_pause:
         RET
 
 ; ============================================================
+; UFO / mystery ship - flies along HUD row 0 in the free span
+; between SCORE (cols 0..9) and LIVES (cols 54..60).
+; ============================================================
+UpdateUFO:
+        LD      A, (UFO_ACT)
+        OR      A
+        JR      NZ, _uu_fly
+        LD      HL, UFO_CNT
+        DEC     (HL)
+        RET     NZ
+        ; spawn: random direction, enter at that side
+        LD      A, R
+        AND     1
+        LD      (UFO_DIR), A            ; 0 = fly right, 1 = fly left
+        OR      A
+        LD      A, UFO_XMIN
+        JR      Z, _uu_spawn
+        LD      A, UFO_XMAX
+_uu_spawn:
+        LD      (UFO_X), A
+        LD      A, 1
+        LD      (UFO_ACT), A
+        JR      _uu_draw
+_uu_fly:
+        LD      A, (UFO_PH)
+        XOR     1
+        LD      (UFO_PH), A
+        RET     Z                       ; move every 2nd frame
+        CALL    EraseUFO
+        LD      A, (UFO_DIR)
+        OR      A
+        LD      A, (UFO_X)
+        JR      NZ, _uu_left
+        INC     A
+        CP      UFO_XMAX + 1
+        JR      Z, _uu_gone
+        JR      _uu_store
+_uu_left:
+        DEC     A
+        CP      UFO_XMIN - 1
+        JR      Z, _uu_gone
+_uu_store:
+        LD      (UFO_X), A
+_uu_draw:
+        LD      A, (UFO_X)
+        LD      C, A
+        LD      B, 0
+        CALL    ScreenAddr
+        LD      (HL), 174               ; saucer: .####. / ###### / .#..#.
+        INC     HL
+        LD      (HL), 143
+        INC     HL
+        LD      (HL), 157
+        RET
+_uu_gone:
+        XOR     A
+        LD      (UFO_ACT), A
+UFOReload:
+        LD      A, R                    ; next spawn in 128..255 frames
+        AND     7FH
+        ADD     A, 128
+        LD      (UFO_CNT), A
+        RET
+
+EraseUFO:
+        LD      A, (UFO_X)
+        LD      C, A
+        LD      B, 0
+        CALL    ScreenAddr
+        LD      (HL), BLANK
+        INC     HL
+        LD      (HL), BLANK
+        INC     HL
+        LD      (HL), BLANK
+        RET
+
+; KillUFO - bullet reached row 0 inside the UFO: mystery score
+; 50/100/150/200 awarded in 50-point chunks (AddScoreTens caps at +10)
+KillUFO:
+        CALL    EraseUFO
+        XOR     A
+        LD      (UFO_ACT), A
+        CALL    UFOReload
+        LD      A, R
+        AND     3
+        INC     A
+        LD      B, A                    ; 1..4 chunks
+_ku_score:
+        PUSH    BC
+        LD      A, 5                    ; 5 tens = 50 points
+        CALL    AddScoreTens
+        POP     BC
+        DJNZ    _ku_score
+        JP      BoomSound
+
+; ============================================================
 ; GameOver - message, wait for SPACE, restart
 ; ============================================================
 GameOver:
@@ -1062,6 +1179,11 @@ K_VAR:          DB      0
 F_VAR:          DB      0
 ETS_X:          DB      0
 ETS_W:          DB      0
+UFO_ACT:        DB      0
+UFO_X:          DB      0
+UFO_DIR:        DB      0
+UFO_PH:         DB      0
+UFO_CNT:        DB      0
 CUR_TMPL:       DW      0
 CUR_ADDR:       DW      0
 ALIVE_PTR:      DW      0
