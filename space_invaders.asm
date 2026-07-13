@@ -1,387 +1,254 @@
 ; ============================================================
-; Space Invaders for TRS-80 Model III
-; Assemble: zmac space_invaders.asm -o space_invaders.cmd
-; Run:      trs80gp -m3 space_invaders.cmd
+; SPACE INVADERS - TRS-80 Model I/III (64x16, block graphics)
+;
+; Formation-based model: one origin (FORM_COL/FORM_ROW/FORM_SUB)
+; positions all 55 invaders. FORM_SUB is both the 1-pixel
+; horizontal shift and the animation state (matches the two
+; target screenshots StartGame / StartGameOneMoveRight).
+;
+; Sprite templates are 5 bytes per char row (blank margins left
+; and right) so horizontal movement self-cleans - no flicker.
+;
+; Assemble: zmac space_invaders.asm   -> zout/space_invaders.cmd
+; Run:      trs80gp -m3 zout/space_invaders.cmd
+; Keys:     Left/Right arrows move, SPACE fires
 ; ============================================================
 
         ORG     5200H
 
-; --- Constants ---
+; --- Hardware ---
 SCREEN          EQU     3C00H
-COLS            EQU     64
-KB_LEFT         EQU     3820H
-KB_RIGHT        EQU     3820H
-KB_SPACE        EQU     3840H
+KBD_CTL         EQU     3840H   ; bit5=LEFT bit6=RIGHT bit7=SPACE (1=pressed)
 SOUND_PORT      EQU     0FFH
+BLANK           EQU     128
 
+; --- Layout (from target screenshots) ---
+FORM_COL0       EQU     13      ; leftmost invader char column at start
+FORM_ROW0       EQU     1       ; top invader char row at start
+COL_MIN         EQU     1
+COL_MAX         EQU     20
 INV_COLS        EQU     11
 INV_ROWS        EQU     5
-MAX_INV         EQU     55
-INV_SPACING     EQU     4
-; Templates include a leading blank char; col 12 renders the first visible char at col 13.
-INV_START_COL   EQU     12
-INV_START_ROW   EQU     1
-DEFENSE_ROW     EQU     14
+SHIELD_ROW      EQU     13
 PLAYER_ROW      EQU     15
-PLAYER_COL      EQU     30
-PLAYER_WIDTH    EQU     3
+PLAYER_X0       EQU     24
+PLAYER_XMAX     EQU     61
 
-CHAR_BLANK      EQU     128
+BULLET_CH       EQU     149     ; left pixel column lit
+TORP_CH         EQU     170     ; right pixel column lit
 
-INV_DEAD        EQU     0
-INV_ALIVE       EQU     1
-
-PK_DIR          EQU     128
-PK_STATE        EQU     64
-PK_YPOS         EQU     48
-PK_TYPE         EQU     15
-
-INV_ENTRY       EQU     4
-
-; --- Entry Point ---
+; ============================================================
+; Entry
+; ============================================================
 START:
         DI
         LD      SP, 7FFFH
 
-        CALL    CLS
-        CALL    InitInvaders
-        CALL    InitPlayer
-
+RESTART:
+        CALL    Cls
         XOR     A
-        LD      (BULLET_ACTIVE), A
-        LD      (BULLET_STATE), A
-        LD      (BULLET_X), A
-        LD      (BULLET_Y), A
-
-        LD      A, 16
-        LD      (MOVE_CNT), A
-        LD      A, 0
-        LD      (FORM_STATE), A
-        LD      (FORM_DIR), A
-        LD      (TURN_FLAG), A
-        LD      (TORP_ACTIVE), A
-        LD      (TORP_CNT), A
+        LD      (SCORE_D), A
+        LD      (SCORE_D+1), A
+        LD      (SCORE_D+2), A
+        LD      (SCORE_D+3), A
+        LD      (GAME_OVER), A
         LD      A, 3
         LD      (LIVES), A
-        CALL    DrawScore
-        CALL    DrawLives
+        CALL    DrawHUD
+        CALL    InitWave
 
 MainLoop:
-        CALL    EraseAllInvaders
-        CALL    RenderAllInvaders
-        CALL    RenderBullet
-        CALL    RenderTorpedo
-        CALL    ReadKeyboard
+        CALL    ReadKeys
         CALL    UpdateBullet
-        CALL    UpdateInvaders
+        CALL    UpdateFormation
         CALL    UpdateTorpedo
         CALL    MaybeFireTorpedo
+        LD      A, (WAVE_DONE)
+        OR      A
+        CALL    NZ, InitWave
+        LD      A, (GAME_OVER)
+        OR      A
+        JP      NZ, GameOver
         CALL    FrameDelay
         JP      MainLoop
 
 ; ============================================================
-; CLS
+; Cls - clear whole screen
 ; ============================================================
-CLS:
+Cls:
         LD      HL, SCREEN
-        LD      (HL), CHAR_BLANK
+        LD      (HL), BLANK
         LD      DE, SCREEN + 1
         LD      BC, 1023
         LDIR
         RET
 
 ; ============================================================
-; InitInvaders
+; InitWave - fresh formation, shields, player, projectiles
 ; ============================================================
-InitInvaders:
-        LD      HL, INV_MATRIX
-        LD      C, INV_ROWS
-
-_init_row:
-        LD      A, C
-        SUB     INV_ROWS
-        NEG
-        LD      B, A
-
-        ; Type: row 0->0, rows 1-2->1, rows 3-4->2
-        LD      A, B
-        CP      0
-        LD      A, 0
-        JR      Z, _init_set_type
-        LD      A, B
-        CP      3
-        JR      C, _init_set_type_1
-        LD      A, 2
-        JR      _init_set_type
-_init_set_type_1:
-        LD      A, 1
-_init_set_type:
-        LD      (INV_TYPE_TMP), A
-
-        ; Screen addr: row_index * 2 + INV_START_ROW
-        ; Reference formation uses 2 character rows between invader rows.
-        LD      A, B
-        ADD     A, B
-        ADD     A, INV_START_ROW
-        CALL    _row_to_addr
-
-        LD      B, INV_COLS
-
-_init_col:
-        LD      (HL), INV_ALIVE
-        INC     HL
-        LD      A, (INV_TYPE_TMP)
-        AND     PK_TYPE
-        LD      (HL), A
-        INC     HL
-        LD      (HL), E
-        INC     HL
-        LD      (HL), D
-        INC     HL
-
-        LD      A, E
-        ADD     A, INV_SPACING
-        LD      E, A
-        JR      NC, _init_de_nc
-        INC     D
-_init_de_nc:
-        DJNZ    _init_col
-
-        DEC     C
-        JR      NZ, _init_row
-        RET
-
-_row_to_addr:
-        LD      E, A
-        LD      D, 0
-        SLA     E
-        RL      D
-        SLA     E
-        RL      D
-        SLA     E
-        RL      D
-        SLA     E
-        RL      D
-        SLA     E
-        RL      D
-        SLA     E
-        RL      D
-        LD      A, E
-        ADD     A, LOW(SCREEN + INV_START_COL)
-        LD      E, A
-        LD      D, HIGH(SCREEN + INV_START_COL)
-        RET     NC
-        INC     D
-        RET
-
-; ============================================================
-; InitPlayer
-; ============================================================
-InitPlayer:
-        LD      A, PLAYER_COL
+InitWave:
+        XOR     A
+        LD      (WAVE_DONE), A
+        LD      (BUL_ACT), A
+        LD      (TORP_ACT), A
+        LD      (TORP_PH), A
+        LD      (FORM_SUB), A
+        LD      (FORM_YSUB), A
+        LD      (FORM_DIR), A           ; 0 = moving right
+        LD      A, 50
+        LD      (TORP_CNT), A
+        LD      A, FORM_COL0
+        LD      (FORM_COL), A
+        LD      A, FORM_ROW0
+        LD      (FORM_ROW), A
+        LD      A, 30
+        LD      (FORM_CNT), A           ; grace period before first step
+        LD      A, INV_COLS * INV_ROWS
+        LD      (ALIVE_CNT), A
+        LD      A, PLAYER_X0
         LD      (PLAYER_X), A
-        CALL    DrawDefenses
+
+        ; all invaders alive
+        LD      HL, ALIVE_ARR
+        LD      B, INV_COLS * INV_ROWS
+_iw_fill:
+        LD      (HL), 1
+        INC     HL
+        DJNZ    _iw_fill
+
+        ; clear play area rows 1..15
+        LD      HL, SCREEN + 64
+        LD      (HL), BLANK
+        LD      DE, SCREEN + 65
+        LD      BC, 15 * 64 - 1
+        LDIR
+
+        CALL    DrawShields
         CALL    DrawPlayer
+        CALL    DrawFormation
         RET
 
 ; ============================================================
-; RenderAllInvaders
+; DrawHUD - row 0: SCORE nnnn ... LIVES n
 ; ============================================================
-RenderAllInvaders:
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-
-_render_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _render_skip
-
-        PUSH    BC
-
-        ; Get sprite pointer via subroutine
-        LD      A, (IX+1)
-        CALL    GetSpritePtr
-        ; HL = sprite data pointer
-
-        ; Get screen addr
-        LD      E, (IX+2)
-        LD      D, (IX+3)
-
-        ; Copy the 4-character screen footprint from the 5-byte template row.
-        ; Byte 0 is the leading blank column, bytes 1-3 hold the 3 visible chars.
-        LD      BC, 4
+DrawHUD:
+        LD      HL, TXT_SCORE
+        LD      DE, SCREEN
+        LD      BC, 6
         LDIR
+        LD      HL, TXT_LIVES
+        LD      DE, SCREEN + 54
+        LD      BC, 6
+        LDIR
+        CALL    DrawScore
+        CALL    DrawLives
+        RET
 
-        ; Draw lower row (+64 down), skipping the trailing blank from the top row.
+TXT_SCORE:
+        DB      'SCORE '
+TXT_LIVES:
+        DB      'LIVES '
+TXT_OVER:
+        DB      'GAME OVER'
+TXT_AGAIN:
+        DB      'PRESS SPACE'
+
+DrawScore:
+        LD      HL, SCORE_D
+        LD      DE, SCREEN + 6
+        LD      B, 4
+_dsc_loop:
+        LD      A, (HL)
+        ADD     A, '0'
+        LD      (DE), A
         INC     HL
+        INC     DE
+        DJNZ    _dsc_loop
+        RET
+
+DrawLives:
+        LD      A, (LIVES)
+        ADD     A, '0'
+        LD      (SCREEN + 60), A
+        RET
+
+; AddScoreTens: A = tens to add (1..3), updates display
+AddScoreTens:
+        LD      HL, SCORE_D + 2         ; tens digit
+        ADD     A, (HL)
+        CP      10
+        JR      C, _ast_store
+        SUB     10
+        LD      (HL), A
+        DEC     HL                      ; hundreds
+        INC     (HL)
+        LD      A, (HL)
+        CP      10
+        JR      C, _ast_done
+        LD      (HL), 0
+        DEC     HL                      ; thousands
+        INC     (HL)
+        LD      A, (HL)
+        CP      10
+        JR      C, _ast_done
+        LD      (HL), 0
+        JR      _ast_done
+_ast_store:
+        LD      (HL), A
+_ast_done:
+        CALL    DrawScore
+        RET
+
+; ============================================================
+; DrawShields - exact char codes from target screenshots
+; ============================================================
+DrawShields:
+        LD      HL, SHIELD_A
+        LD      DE, SCREEN + SHIELD_ROW * 64 + 14
+        CALL    DrawShield1
+        LD      HL, SHIELD_B
+        LD      DE, SCREEN + SHIELD_ROW * 64 + 26
+        CALL    DrawShield1
+        LD      HL, SHIELD_A
+        LD      DE, SCREEN + SHIELD_ROW * 64 + 39
+        CALL    DrawShield1
+        LD      HL, SHIELD_B
+        LD      DE, SCREEN + SHIELD_ROW * 64 + 51
+        ; fall through
+DrawShield1:
+        LD      BC, 6
+        LDIR
+        ; next char row: advance DE by 64-6
         LD      A, E
-        ADD     A, 64
+        ADD     A, 58
         LD      E, A
-        JR      NC, _rm_nc
+        JR      NC, _dsh_nc
         INC     D
-_rm_nc:
-        LD      BC, 4
+_dsh_nc:
+        LD      BC, 6
         LDIR
-
-
-
-        POP     BC
-        JR      _render_advance
-
-_render_skip:
-_render_advance:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _render_loop
         RET
 
-; ============================================================
-; EraseAllInvaders
-; Clears every stored invader footprint before redrawing.
-; ============================================================
-EraseAllInvaders:
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-
-_erase_loop:
-        LD      E, (IX+2)
-        LD      D, (IX+3)
-        PUSH    DE
-        POP     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-
-        LD      A, L
-        ADD     A, 61
-        LD      L, A
-        JR      NC, _erase_row2
-        INC     H
-_erase_row2:
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-        INC     HL
-        LD      (HL), CHAR_BLANK
-
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _erase_loop
-        RET
+SHIELD_A:
+        DB      128,176,176,176,144,128
+        DB      191,191,143,175,191,149
+SHIELD_B:
+        DB      128,160,176,176,176,128
+        DB      170,191,159,143,191,191
 
 ; ============================================================
-; GetSpritePtr: A = packed byte -> HL = sprite data pointer
-; ============================================================
-GetSpritePtr:
-        LD      C, A
-        LD      HL, SPRITE_BASE
-
-        ; Layout: type*60 + state*30 + yPos*10
-        LD      A, C
-        AND     PK_TYPE
-        CP      1
-        JR      Z, _sp_add_type1
-        CP      2
-        JR      Z, _sp_add_type2
-        JR      _sp_state
-_sp_add_type1:
-        LD      DE, 60
-        ADD     HL, DE
-        JR      _sp_state
-_sp_add_type2:
-        LD      DE, 120
-        ADD     HL, DE
-
-_sp_state:
-        LD      A, C
-        AND     PK_STATE
-        JR      Z, _sp_ypos
-        LD      DE, 30
-        ADD     HL, DE
-
-_sp_ypos:
-        LD      A, C
-        AND     PK_YPOS
-        JR      Z, _sp_done
-        CP      16
-        JR      Z, _sp_add_y1
-        LD      DE, 20
-        ADD     HL, DE
-        JR      _sp_done
-_sp_add_y1:
-        LD      DE, 10
-        ADD     HL, DE
-_sp_done:
-        RET
-
-; ============================================================
-; DrawDefenses / DrawDefenseAt
-; ============================================================
-DrawDefenses:
-        LD      A, 16
-        CALL    DrawDefenseAt
-        LD      A, 32
-        CALL    DrawDefenseAt
-        LD      A, 48
-        CALL    DrawDefenseAt
-        LD      A, 60
-        CALL    DrawDefenseAt
-        RET
-
-DrawDefenseAt:
-        PUSH    AF
-        SUB     2
-        LD      C, A
-        LD      B, DEFENSE_ROW - 1
-        CALL    ScreenAddr
-        LD      (HL), 184
-        INC     HL
-        LD      (HL), 191
-        INC     HL
-        LD      (HL), 191
-        INC     HL
-        LD      (HL), 180
-        POP     AF
-        SUB     2
-        LD      C, A
-        LD      B, DEFENSE_ROW
-        CALL    ScreenAddr
-        LD      (HL), 143
-        INC     HL
-        LD      (HL), 133
-        INC     HL
-        LD      (HL), 138
-        INC     HL
-        LD      (HL), 143
-        RET
-
-; ============================================================
-; DrawPlayer / ErasePlayer
+; Player
 ; ============================================================
 DrawPlayer:
         LD      A, (PLAYER_X)
         LD      C, A
         LD      B, PLAYER_ROW
         CALL    ScreenAddr
+        LD      (HL), 160
+        INC     HL
         LD      (HL), 184
         INC     HL
-        LD      (HL), 189
-        INC     HL
-        LD      (HL), 144
+        LD      (HL), 176
         RET
 
 ErasePlayer:
@@ -389,345 +256,587 @@ ErasePlayer:
         LD      C, A
         LD      B, PLAYER_ROW
         CALL    ScreenAddr
-        LD      (HL), CHAR_BLANK
+        LD      (HL), BLANK
         INC     HL
-        LD      (HL), CHAR_BLANK
+        LD      (HL), BLANK
         INC     HL
-        LD      (HL), CHAR_BLANK
+        LD      (HL), BLANK
         RET
 
 ; ============================================================
-; ReadKeyboard
+; ReadKeys - TRS-80 keyboard matrix, active high
 ; ============================================================
-ReadKeyboard:
-        LD      A, (KB_LEFT)
-        BIT     5, A
-        JR      NZ, _kb_right
+ReadKeys:
+        LD      A, (KBD_CTL)
+        LD      B, A
+        BIT     5, B                    ; LEFT
+        JR      Z, _rk_right
         LD      A, (PLAYER_X)
         OR      A
-        JR      Z, _kb_right
+        JR      Z, _rk_right
         CALL    ErasePlayer
-        DEC     A
-        LD      (PLAYER_X), A
+        LD      HL, PLAYER_X
+        DEC     (HL)
         CALL    DrawPlayer
-_kb_right:
-        LD      A, (KB_RIGHT)
-        BIT     6, A
-        JR      NZ, _kb_fire
+_rk_right:
+        BIT     6, B                    ; RIGHT
+        JR      Z, _rk_fire
         LD      A, (PLAYER_X)
-        CP      COLS - PLAYER_WIDTH
-        JR      Z, _kb_fire
+        CP      PLAYER_XMAX
+        JR      NC, _rk_fire
         CALL    ErasePlayer
-        INC     A
-        LD      (PLAYER_X), A
+        LD      HL, PLAYER_X
+        INC     (HL)
         CALL    DrawPlayer
-_kb_fire:
-        LD      A, (KB_SPACE)
-        BIT     7, A
-        JR      NZ, _kb_done
-        LD      A, (BULLET_ACTIVE)
+_rk_fire:
+        BIT     7, B                    ; SPACE
+        RET     Z
+        LD      A, (BUL_ACT)
         OR      A
         RET     NZ
-        LD      A, 1
-        LD      (BULLET_ACTIVE), A
+        ; spawn at PLAYER_X+1, one row above player
         LD      A, (PLAYER_X)
         INC     A
-        LD      (BULLET_X), A
+        LD      (BUL_X), A
+        LD      C, A
         LD      A, PLAYER_ROW - 1
-        LD      (BULLET_Y), A
-        LD      A, 0
-        LD      (BULLET_STATE), A
-        CALL    PewSound
-_kb_done:
-        RET
-
-; ============================================================
-; Bullet
-; ============================================================
-RenderBullet:
-        LD      A, (BULLET_ACTIVE)
-        OR      A
-        RET     Z
-        LD      A, (BULLET_X)
-        LD      C, A
-        LD      A, (BULLET_Y)
+        LD      (BUL_Y), A
         LD      B, A
         CALL    ScreenAddr
-        LD      A, (BULLET_STATE)
-        AND     1
-        JR      Z, _bc186
-        LD      A, 170
-        JR      _bd
-_bc186:
-        LD      A, 186
-_bd:
-        LD      (HL), A
-        RET
+        LD      A, (HL)
+        CP      BLANK
+        JR      Z, _rk_fire_ok
+        ; shot straight into own shield: erode it, no bullet
+        LD      (HL), BLANK
+        JP      PewSound
+_rk_fire_ok:
+        LD      (HL), BULLET_CH
+        LD      A, 1
+        LD      (BUL_ACT), A
+        JP      PewSound
 
-EraseBullet:
-        LD      A, (BULLET_X)
-        LD      C, A
-        LD      A, (BULLET_Y)
-        LD      B, A
-        CALL    ScreenAddr
-        LD      (HL), CHAR_BLANK
-        RET
-
+; ============================================================
+; UpdateBullet - 1 row per frame, peek-before-draw collision
+; ============================================================
 UpdateBullet:
-        LD      A, (BULLET_ACTIVE)
+        LD      A, (BUL_ACT)
         OR      A
         RET     Z
-        CALL    EraseBullet
-        LD      HL, BULLET_STATE
-        LD      A, (HL)
-        INC     A
-        AND     7
-        LD      (HL), A
-        LD      A, (HL)
-        OR      A
-        JR      NZ, _bncm
-        LD      HL, BULLET_Y
-        DEC     (HL)
-        LD      A, (HL)
-        CP      INV_START_ROW - 1
-        JR      C, _bkill
-_bncm:
-        CALL    CheckBulletHit
-        CALL    RenderBullet
-        RET
-_bkill:
-        XOR     A
-        LD      (BULLET_ACTIVE), A
-        RET
-
-CheckBulletHit:
-        LD      A, (BULLET_X)
+        ; erase current position
+        LD      A, (BUL_X)
         LD      C, A
-        LD      A, (BULLET_Y)
+        LD      A, (BUL_Y)
         LD      B, A
         CALL    ScreenAddr
-        LD      D, H
-        LD      E, L
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-_cl_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _cl_next
-        LD      A, (IX+2)
-        LD      H, A
-        LD      A, (IX+3)
-        LD      L, A
-        LD      A, D
-        CP      H
-        JR      NZ, _cl_bot
-        LD      A, E
-        CP      L
-        JR      Z, _bhit
-        INC     L
-        CP      L
-        JR      Z, _bhit
-        INC     L
-        CP      L
-        JR      Z, _bhit
-        JR      _cl_nh
-_cl_bot:
-        LD      A, E
-        ADD     A, 64
-        LD      E, A
-        LD      A, (IX+2)
-        ADD     A, 64
-        LD      C, A
-        LD      A, (IX+3)
+        LD      (HL), BLANK
+        ; move up
+        LD      A, (BUL_Y)
+        DEC     A
+        LD      (BUL_Y), A
+        CP      1
+        JR      C, _ub_die              ; reached HUD row
+        ; peek new cell
         LD      B, A
-        LD      A, D
-        CP      B
-        JR      NZ, _cl_nh
-        LD      A, E
-        CP      C
-        JR      Z, _bhit
-        INC     C
-        CP      C
-        JR      Z, _bhit
-        INC     C
-        CP      C
-        JR      Z, _bhit
-_cl_nh:
-_cl_next:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _cl_loop
+        LD      A, (BUL_X)
+        LD      C, A
+        CALL    ScreenAddr
+        LD      A, (HL)
+        CP      BLANK
+        JR      NZ, _ub_hit
+        LD      (HL), BULLET_CH
         RET
-_bhit:
-        LD      (IX+0), INV_DEAD
-        CALL    ExplosionSound
-        CALL    AddScore
+_ub_die:
         XOR     A
-        LD      (BULLET_ACTIVE), A
+        LD      (BUL_ACT), A
+        RET
+_ub_hit:
+        XOR     A
+        LD      (BUL_ACT), A
+        CALL    ResolveInvaderHit       ; Z set on success
+        RET     Z
+        ; not an invader: erode shields, otherwise vanish
+        LD      A, (BUL_Y)
+        CP      SHIELD_ROW
+        RET     C
+        LD      A, (BUL_X)
+        LD      C, A
+        LD      A, (BUL_Y)
+        LD      B, A
+        CALL    ScreenAddr
+        LD      (HL), BLANK
         RET
 
 ; ============================================================
-; UpdateInvaders
+; ResolveInvaderHit - map (BUL_X,BUL_Y) to formation slot.
+; Returns Z on kill, NZ on miss.
 ; ============================================================
-UpdateInvaders:
-        LD      HL, MOVE_CNT
+ResolveInvaderHit:
+        LD      A, (FORM_ROW)
+        LD      C, A
+        LD      A, (BUL_Y)
+        SUB     C
+        JR      C, _ri_fail
+        CP      10
+        JR      NC, _ri_fail
+        SRL     A                       ; formation row 0..4
+        LD      (HIT_ROW), A
+        LD      A, (FORM_COL)
+        LD      C, A
+        LD      A, (BUL_X)
+        SUB     C
+        JR      C, _ri_fail
+        LD      B, A
+        AND     3
+        CP      3
+        JR      Z, _ri_fail             ; gap column between invaders
+        LD      A, B
+        SRL     A
+        SRL     A                       ; formation col 0..10
+        CP      INV_COLS
+        JR      NC, _ri_fail
+        LD      (HIT_COL), A
+        ; idx = row*11 + col
+        LD      A, (HIT_ROW)
+        LD      B, A
+        ADD     A, A
+        LD      C, A
+        ADD     A, A
+        ADD     A, A
+        ADD     A, C
+        ADD     A, B                    ; *11
+        LD      C, A
+        LD      A, (HIT_COL)
+        ADD     A, C
+        LD      E, A
+        LD      D, 0
+        LD      HL, ALIVE_ARR
+        ADD     HL, DE
+        LD      A, (HL)
+        OR      A
+        JR      Z, _ri_fail
+        ; kill it
+        LD      (HL), 0
+        CALL    EraseHitInvader
+        ; score by type
+        LD      A, (HIT_ROW)
+        LD      E, A
+        LD      D, 0
+        LD      HL, ROW_TYPE
+        ADD     HL, DE
+        LD      E, (HL)
+        LD      HL, TYPE_PTS
+        ADD     HL, DE
+        LD      A, (HL)
+        CALL    AddScoreTens
+        CALL    BoomSound
+        LD      HL, ALIVE_CNT
+        DEC     (HL)
+        JR      NZ, _ri_ok
+        LD      A, 1
+        LD      (WAVE_DONE), A
+_ri_ok:
+        XOR     A                       ; Z = success
+        RET
+_ri_fail:
+        OR      1                       ; NZ = miss
+        RET
+
+; EraseHitInvader - blank 5x2 chars at slot (HIT_ROW, HIT_COL)
+EraseHitInvader:
+        LD      A, (HIT_ROW)
+        ADD     A, A
+        LD      C, A
+        LD      A, (FORM_ROW)
+        ADD     A, C
+        LD      B, A                    ; char row
+        LD      A, (HIT_COL)
+        ADD     A, A
+        ADD     A, A
+        LD      C, A
+        LD      A, (FORM_COL)
+        DEC     A
+        ADD     A, C
+        LD      C, A                    ; char col (blit origin)
+        CALL    ScreenAddr
+        LD      B, 5
+_ehi_top:
+        LD      (HL), BLANK
+        INC     HL
+        DJNZ    _ehi_top
+        LD      DE, 59
+        ADD     HL, DE
+        LD      B, 5
+_ehi_bot:
+        LD      (HL), BLANK
+        INC     HL
+        DJNZ    _ehi_bot
+        RET
+
+ROW_TYPE:
+        DB      0, 1, 1, 2, 2           ; squid, crab, crab, octopus, octopus
+TYPE_PTS:
+        DB      3, 2, 1                 ; tens: 30 / 20 / 10 points
+
+; ============================================================
+; UpdateFormation - one pixel step every FORM_CNT frames
+; ============================================================
+UpdateFormation:
+        LD      HL, FORM_CNT
         DEC     (HL)
         RET     NZ
-        LD      A, 16
-        LD      (MOVE_CNT), A
-        CALL    CheckBoundary
-        LD      A, (TURN_FLAG)
-        OR      A
-        JR      Z, _ju
-        CALL    FormationTurn
-        JR      _ud
-_ju:
-        CALL    MoveFormation
-_ud:
-        RET
-
-CheckBoundary:
-        XOR     A
-        LD      (TURN_FLAG), A
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-_bnd_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _bnd_next
-        LD      A, (IX+2)
-        AND     63
+        ; reload cadence: faster as invaders die
+        LD      A, (ALIVE_CNT)
+        SRL     A
+        SRL     A
+        ADD     A, 2
+        LD      (HL), A
+        ; step
         LD      A, (FORM_DIR)
         OR      A
-        JR      NZ, _chk_l
-        LD      A, (IX+2)
-        AND     63
-        CP      60
-        JR      C, _bnd_next
+        JR      NZ, _uf_left
+        ; moving right
+        LD      A, (FORM_SUB)
+        OR      A
+        JR      NZ, _uf_r_char
         LD      A, 1
-        LD      (TURN_FLAG), A
-        JR      _bnd_next
-_chk_l:
-        LD      A, (IX+2)
-        AND     63
+        LD      (FORM_SUB), A
+        JP      DrawFormation
+_uf_r_char:
+        LD      A, (FORM_COL)
+        CP      COL_MAX
+        JR      Z, _uf_desc_l
+        INC     A
+        LD      (FORM_COL), A
+        XOR     A
+        LD      (FORM_SUB), A
+        JP      DrawFormation
+_uf_left:
+        LD      A, (FORM_SUB)
+        OR      A
+        JR      Z, _uf_l_char
+        XOR     A
+        LD      (FORM_SUB), A
+        JP      DrawFormation
+_uf_l_char:
+        LD      A, (FORM_COL)
+        CP      COL_MIN
+        JR      Z, _uf_desc_r
+        DEC     A
+        LD      (FORM_COL), A
+        LD      A, 1
+        LD      (FORM_SUB), A
+        JP      DrawFormation
+_uf_desc_l:
+        LD      A, 1
+        JR      _uf_descend
+_uf_desc_r:
+        XOR     A
+_uf_descend:
+        LD      (FORM_DIR), A
+        ; descend by ONE pixel: ysub 0->1->2, then char row rollover
+        LD      A, (FORM_YSUB)
         CP      2
-        JR      NC, _bnd_next
+        JR      Z, _uf_rollover
+        INC     A
+        LD      (FORM_YSUB), A
+        JP      DrawFormation
+_uf_rollover:
+        ; invasion check: bottom sprite pixel would touch the shields
+        LD      A, (FORM_ROW)
+        INC     A
+        CP      4                       ; row 4 + ysub 0 -> pixel row 39
+        JR      C, _uf_desc_ok
         LD      A, 1
-        LD      (TURN_FLAG), A
-_bnd_next:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _bnd_loop
+        LD      (GAME_OVER), A
+        RET
+_uf_desc_ok:
+        CALL    EraseTopStripes
+        LD      A, (FORM_ROW)
+        INC     A
+        LD      (FORM_ROW), A
+        XOR     A
+        LD      (FORM_YSUB), A
+        JP      DrawFormation
+
+; EraseTopStripes - on char-row rollover the top char row of every
+; formation row goes stale; blank those 5 stripes (45 chars wide).
+EraseTopStripes:
+        LD      A, (FORM_ROW)
+        LD      B, A                    ; stripe row
+        LD      D, 5                    ; 5 formation rows
+_ets_loop:
+        PUSH    DE
+        PUSH    BC
+        LD      A, (FORM_COL)
+        DEC     A
+        LD      C, A
+        CALL    ScreenAddr
+        LD      B, 45
+_ets_fill:
+        LD      (HL), BLANK
+        INC     HL
+        DJNZ    _ets_fill
+        POP     BC
+        POP     DE
+        INC     B
+        INC     B                       ; next formation row (+2 chars)
+        DEC     D
+        JR      NZ, _ets_loop
         RET
 
-FormationTurn:
-        LD      HL, FORM_DIR
+; ============================================================
+; DrawFormation - blit all alive invaders (5x2 chars each)
+; ============================================================
+DrawFormation:
+        XOR     A
+        LD      (K_VAR), A
+        LD      HL, ALIVE_ARR
+        LD      (ALIVE_PTR), HL
+_df_row:
+        ; template = SPRITES + type*60 + state*30 + ysub*10
+        LD      A, (K_VAR)
+        LD      E, A
+        LD      D, 0
+        LD      HL, ROW_TYPE
+        ADD     HL, DE
+        LD      E, (HL)                 ; type 0..2
+        LD      HL, TYPE_OFF
+        ADD     HL, DE
+        LD      C, (HL)                 ; type*60
+        LD      A, (FORM_SUB)
+        OR      A
+        JR      Z, _df_state0
+        LD      A, 30
+_df_state0:
+        ADD     A, C                    ; + state*30
+        LD      C, A
+        LD      A, (FORM_YSUB)
+        LD      E, A
+        LD      HL, YSUB_OFF
+        ADD     HL, DE
+        LD      A, (HL)                 ; ysub*10
+        ADD     A, C
+        LD      E, A
+        LD      D, 0
+        LD      HL, SPRITES
+        ADD     HL, DE
+        LD      (CUR_TMPL), HL
+        ; base screen address: row FORM_ROW+2k, col FORM_COL-1
+        LD      A, (K_VAR)
+        ADD     A, A
+        LD      C, A
+        LD      A, (FORM_ROW)
+        ADD     A, C
+        LD      B, A
+        LD      A, (FORM_COL)
+        DEC     A
+        LD      C, A
+        CALL    ScreenAddr
+        LD      (CUR_ADDR), HL
+        LD      A, INV_COLS
+        LD      (F_VAR), A
+_df_col:
+        LD      HL, (ALIVE_PTR)
+        LD      A, (HL)
+        INC     HL
+        LD      (ALIVE_PTR), HL
+        OR      A
+        JR      Z, _df_next
+        ; blit 5 top + 5 bottom
+        LD      HL, (CUR_TMPL)
+        LD      DE, (CUR_ADDR)
+        LD      BC, 5
+        LDIR
+        LD      A, E
+        ADD     A, 59
+        LD      E, A
+        JR      NC, _df_nc
+        INC     D
+_df_nc:
+        LD      BC, 5
+        LDIR
+_df_next:
+        LD      HL, (CUR_ADDR)
+        LD      BC, 4
+        ADD     HL, BC
+        LD      (CUR_ADDR), HL
+        LD      HL, F_VAR
+        DEC     (HL)
+        JR      NZ, _df_col
+        LD      A, (K_VAR)
+        INC     A
+        LD      (K_VAR), A
+        CP      INV_ROWS
+        JP      NZ, _df_row
+        RET
+
+; ============================================================
+; Torpedo - invader shot, 1 row per 2 frames
+; ============================================================
+MaybeFireTorpedo:
+        LD      A, (TORP_ACT)
+        OR      A
+        RET     NZ
+        LD      HL, TORP_CNT
+        DEC     (HL)
+        RET     NZ
+        ; reload pause 25..56 frames (pseudo random)
+        LD      A, R
+        AND     31
+        ADD     A, 25
+        LD      (HL), A
+        ; pick a column 0..10
+        LD      A, R
+        AND     15
+        CP      INV_COLS
+        JR      C, _mft_col
+        SUB     6
+_mft_col:
+        LD      (HIT_COL), A            ; reuse as temp
+        ; find lowest alive invader in that column
+        LD      E, A
+        LD      D, 0
+        LD      HL, ALIVE_ARR + 44      ; bottom row
+        ADD     HL, DE
+        LD      B, 5
+_mft_scan:
+        LD      A, (HL)
+        OR      A
+        JR      NZ, _mft_found
+        LD      DE, -11
+        ADD     HL, DE
+        DJNZ    _mft_scan
+        RET                             ; column empty
+_mft_found:
+        ; formation row = B-1; spawn row = FORM_ROW + 2*(B-1) + 2 = FORM_ROW + 2*B
+        LD      A, B
+        ADD     A, A
+        LD      C, A
+        LD      A, (FORM_ROW)
+        ADD     A, C
+        CP      PLAYER_ROW + 1
+        RET     NC
+        LD      (TORP_Y), A
+        LD      B, A
+        ; x = FORM_COL + 4*col + 1 (sprite middle)
+        LD      A, (HIT_COL)
+        ADD     A, A
+        ADD     A, A
+        INC     A
+        LD      C, A
+        LD      A, (FORM_COL)
+        ADD     A, C
+        LD      (TORP_X), A
+        LD      C, A
+        CALL    ScreenAddr
+        LD      A, (HL)
+        CP      BLANK
+        RET     NZ                      ; spawn cell occupied: skip
+        LD      (HL), TORP_CH
+        LD      A, 1
+        LD      (TORP_ACT), A
+        RET
+
+UpdateTorpedo:
+        LD      A, (TORP_ACT)
+        OR      A
+        RET     Z
+        LD      HL, TORP_PH
         LD      A, (HL)
         XOR     1
         LD      (HL), A
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-_tr_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _tr_next
-        LD      A, (IX+1)
-        XOR     PK_DIR
-        ADD     A, 16
-        AND     207
-        LD      (IX+1), A
-        LD      A, (IX+2)
-        ADD     A, 64
-        LD      (IX+2), A
-_tr_next:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _tr_loop
-        RET
-
-MoveFormation:
-        LD      A, (FORM_DIR)
-        OR      A
-        JR      NZ, _ml
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-_mr_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _mr_next
-        LD      A, (IX+1)
-        AND     PK_STATE
-        JR      Z, _mr_set_state
-        LD      A, (IX+1)
-        AND     191
-        LD      (IX+1), A
-        LD      A, (IX+2)
+        RET     NZ                      ; move every 2nd frame
+        ; erase
+        LD      A, (TORP_X)
+        LD      C, A
+        LD      A, (TORP_Y)
+        LD      B, A
+        CALL    ScreenAddr
+        LD      (HL), BLANK
+        ; move down
+        LD      A, (TORP_Y)
         INC     A
-        LD      (IX+2), A
-        JR      NZ, _mr_next
-        INC     (IX+3)
-        JR      _mr_next
-_mr_set_state:
-        LD      A, (IX+1)
-        OR      PK_STATE
-        LD      (IX+1), A
-_mr_next:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _mr_loop
+        LD      (TORP_Y), A
+        CP      16
+        JR      NC, _ut_die
+        ; peek new cell
+        LD      B, A
+        LD      A, (TORP_X)
+        LD      C, A
+        CALL    ScreenAddr
+        LD      A, (HL)
+        CP      BLANK
+        JR      NZ, _ut_hit
+        LD      (HL), TORP_CH
         RET
-_ml:
-        LD      IX, INV_MATRIX
-        LD      B, MAX_INV
-_ml_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _ml_next
-        LD      A, (IX+1)
-        AND     PK_STATE
-        JR      NZ, _ml_clear_state
-        LD      A, (IX+1)
-        OR      PK_STATE
-        LD      (IX+1), A
-        LD      A, (IX+2)
-        DEC     A
-        LD      (IX+2), A
-        CP      255
-        JR      NZ, _ml_next
-        DEC     (IX+3)
-        JR      _ml_next
-_ml_clear_state:
-        LD      A, (IX+1)
-        AND     191
-        LD      (IX+1), A
-_ml_next:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DJNZ    _ml_loop
+_ut_die:
+        XOR     A
+        LD      (TORP_ACT), A
+        RET
+_ut_hit:
+        XOR     A
+        LD      (TORP_ACT), A
+        LD      A, (TORP_Y)
+        CP      PLAYER_ROW
+        JR      Z, _ut_player
+        CP      SHIELD_ROW
+        RET     C                       ; hit bullet/invader region: vanish
+        ; erode shield
+        LD      (HL), BLANK
+        RET
+_ut_player:
+        ; hit something on player row - the player?
+        LD      A, (PLAYER_X)
+        LD      C, A
+        LD      A, (TORP_X)
+        SUB     C
+        RET     C                       ; left of player
+        CP      3
+        RET     NC                      ; right of player
+        ; player hit!
+        CALL    BoomSound
+        LD      HL, LIVES
+        DEC     (HL)
+        CALL    DrawLives
+        LD      A, (LIVES)
+        OR      A
+        JR      NZ, _ut_respawn
+        LD      A, 1
+        LD      (GAME_OVER), A
+        RET
+_ut_respawn:
+        CALL    DrawPlayer              ; redraw (torpedo never overwrote it)
+        LD      B, 12                   ; short dramatic pause
+_ut_pause:
+        CALL    FrameDelay
+        DJNZ    _ut_pause
         RET
 
 ; ============================================================
-; ScreenAddr: B=Y, C=X -> HL=SCREEN+Y*64+X
+; GameOver - message, wait for SPACE, restart
+; ============================================================
+GameOver:
+        LD      HL, TXT_OVER
+        LD      DE, SCREEN + 7 * 64 + 27
+        LD      BC, 9
+        LDIR
+        LD      HL, TXT_AGAIN
+        LD      DE, SCREEN + 9 * 64 + 26
+        LD      BC, 11
+        LDIR
+        ; wait for SPACE released, then pressed
+_go_rel:
+        LD      A, (KBD_CTL)
+        BIT     7, A
+        JR      NZ, _go_rel
+_go_prs:
+        LD      A, (KBD_CTL)
+        BIT     7, A
+        JR      Z, _go_prs
+        JP      RESTART
+
+; ============================================================
+; ScreenAddr: B=row, C=col -> HL = SCREEN + row*64 + col
 ; ============================================================
 ScreenAddr:
         PUSH    AF
@@ -756,303 +865,51 @@ ScreenAddr:
         RET
 
 ; ============================================================
-; Sound
+; Sound - cassette port, bits 0/1 only (bit 2 is mode select!)
 ; ============================================================
 PewSound:
-        LD      B, 8
-_pw_loop:
+        LD      B, 12
+_pew_loop:
         LD      A, 1
         OUT     (SOUND_PORT), A
-        CALL    ShortDelay
+        LD      C, 30
+        CALL    SoundDelay
         XOR     A
         OUT     (SOUND_PORT), A
-        CALL    ShortDelay
-        DJNZ    _pw_loop
+        LD      C, 30
+        CALL    SoundDelay
+        DJNZ    _pew_loop
         RET
 
-ExplosionSound:
-        LD      B, 20
-_ex_loop:
+BoomSound:
+        LD      B, 25
+_boom_loop:
         LD      A, 1
         OUT     (SOUND_PORT), A
-        CALL    ShortDelay
+        LD      A, R                    ; noisy period = explosion
+        AND     63
+        ADD     A, 40
+        LD      C, A
+        CALL    SoundDelay
         XOR     A
         OUT     (SOUND_PORT), A
-        CALL    ShortDelay
-        DJNZ    _ex_loop
+        LD      C, 60
+        CALL    SoundDelay
+        DJNZ    _boom_loop
         RET
 
-ShortDelay:
-        PUSH    HL
-        LD      HL, 20
-_sd_loop:
-        DEC     HL
-        LD      A, H
-        OR      L
-        JR      NZ, _sd_loop
-        POP     HL
+SoundDelay:                             ; C * ~13 T-states
+_sdl_loop:
+        DEC     C
+        JR      NZ, _sdl_loop
         RET
-
 
 ; ============================================================
-; Torpedo (Invader shoots down)
+; FrameDelay - main loop pacing (~30 fps on 2 MHz)
 ; ============================================================
-RenderTorpedo:
-        LD      A, (TORP_ACTIVE)
-        OR      A
-        RET     Z
-        LD      A, (TORP_X)
-        LD      C, A
-        LD      A, (TORP_Y)
-        LD      B, A
-        CALL    ScreenAddr
-        LD      A, (TORP_STATE)
-        AND     1
-        JR      Z, _trp186
-        LD      A, 170
-        JR      _trp_d
-_trp186:
-        LD      A, 186
-_trp_d:
-        LD      (HL), A
-        RET
-
-EraseTorpedo:
-        LD      A, (TORP_X)
-        LD      C, A
-        LD      A, (TORP_Y)
-        LD      B, A
-        CALL    ScreenAddr
-        LD      (HL), CHAR_BLANK
-        RET
-
-UpdateTorpedo:
-        LD      A, (TORP_ACTIVE)
-        OR      A
-        RET     Z
-        CALL    EraseTorpedo
-        LD      HL, TORP_STATE
-        LD      A, (HL)
-        INC     A
-        AND     7
-        LD      (HL), A
-        LD      A, (HL)
-        OR      A
-        JR      NZ, _ut_check
-        LD      HL, TORP_Y
-        INC     (HL)
-        LD      A, (HL)
-        CP      PLAYER_ROW + 1
-        JR      C, _ut_check
-        XOR     A
-        LD      (TORP_ACTIVE), A
-        RET
-_ut_check:
-        ; Check if torpedo hits player
-        LD      A, (TORP_X)
-        LD      C, A
-        LD      A, (TORP_Y)
-        LD      B, A
-        CALL    ScreenAddr
-        LD      D, H
-        LD      E, L
-        LD      A, (PLAYER_X)
-        LD      C, A
-        LD      B, PLAYER_ROW
-        CALL    ScreenAddr
-        ; Check if torpedo pos overlaps player (3 chars wide)
-        LD      A, D
-        CP      H
-        JR      NZ, _ut_miss
-        LD      A, E
-        CP      L
-        JR      Z, _ut_hit
-        INC     L
-        CP      L
-        JR      Z, _ut_hit
-        INC     L
-        CP      L
-        JR      Z, _ut_hit
-_ut_miss:
-        CALL    RenderTorpedo
-        RET
-_ut_hit:
-        CALL    ExplosionSound
-        XOR     A
-        LD      (TORP_ACTIVE), A
-        CALL    ErasePlayer
-        LD      A, PLAYER_COL
-        LD      (PLAYER_X), A
-        CALL    DrawPlayer
-        RET
-
-MaybeFireTorpedo:
-        ; Only fire if no torpedo active
-        LD      A, (TORP_ACTIVE)
-        OR      A
-        RET     NZ
-        ; Decrement counter
-        LD      HL, TORP_CNT
-        LD      A, (HL)
-        DEC     A
-        JR      Z, _mf_fire
-        LD      (HL), A
-        RET
-_mf_fire:
-        ; Reset counter to random-ish value (10-30)
-        LD      A, 20
-        LD      (HL), A
-        ; Pick a random alive invader (use R register as pseudo-random)
-        LD      A, R
-        AND     3Fh
-        LD      C, A
-        LD      B, 0
-        ; Find C-th alive invader
-        LD      IX, INV_MATRIX
-        LD      D, MAX_INV
-_mf_loop:
-        LD      A, (IX+0)
-        CP      INV_ALIVE
-        JR      NZ, _mf_next
-        LD      A, B
-        CP      C
-        JR      Z, _mf_found
-        INC     B
-_mf_next:
-        PUSH    IX
-        POP     HL
-        LD      DE, 4
-        ADD     HL, DE
-        PUSH    HL
-        POP     IX
-        DEC     D
-        JR      NZ, _mf_loop
-        RET
-_mf_found:
-        ; Fire from this invader
-        LD      A, (IX+2)
-        ADD     A, 1
-        LD      (TORP_X), A
-        LD      A, (IX+3)
-        LD      H, A
-        LD      A, (IX+2)
-        LD      L, A
-        ; Get row of this invader to find Y
-        LD      A, (IX+2)
-        LD      E, A
-        LD      A, (IX+3)
-        LD      D, A
-        ; Y = row of invader + 2 (below invader)
-        ; We need to find the screen row
-        LD      A, E
-        SUB     LOW(SCREEN + INV_START_COL)
-        JR      C, _mf_no_borrow
-        DEC     D
-_mf_no_borrow:
-        ; Divide by 64 to get row
-        LD      L, A
-        LD      H, D
-        LD      DE, 64
-        ; Simple division: HL / 64
-        LD      A, H
-        LD      B, A
-        LD      A, L
-        ; Row is roughly H (since L < 64 usually)
-        LD      A, B
-        ADD     A, 2
-        LD      (TORP_Y), A
-        LD      A, 1
-        LD      (TORP_ACTIVE), A
-        LD      A, 0
-        LD      (TORP_STATE), A
-        CALL    RenderTorpedo
-        RET
-
-
-; ============================================================
-; Score / Lives Display
-; ============================================================
-; Draw score at top-right: row 0, col 56-63
-; Draw lives at top-left: row 0, col 0-2
-DrawScore:
-        ; Draw score digits at row 0, col 58-59
-        LD      A, 58
-        LD      C, A
-        LD      B, 0
-        CALL    ScreenAddr
-        ; Save addr
-        LD      D, H
-        LD      E, L
-        ; First digit
-        LD      A, (SCORE)
-        CALL    _draw_digit_to_char
-        LD      (DE), A
-        ; Second digit
-        INC     E
-        LD      A, (SCORE+1)
-        CALL    _draw_digit_to_char
-        LD      (DE), A
-        RET
-
-_draw_digit_to_char:
-        ; A = 0-9 -> A = block graphics char
-        PUSH    BC
-        PUSH    DE
-        LD      B, A
-        LD      HL, _digit_table
-        LD      E, B
-        LD      D, 0
-        ADD     HL, DE
-        LD      A, (HL)
-        POP     DE
-        POP     BC
-        RET
-
-_digit_table:
-        DB      128+1+2+4+8+16+32  ; 0
-        DB      128+0+0+0+0+16+32  ; 1
-        DB      128+1+2+4+8+0+0    ; 2
-        DB      128+1+2+4+8+16+32  ; 3
-        DB      128+0+0+4+8+16+32  ; 4
-        DB      128+1+0+4+8+16+32  ; 5
-        DB      128+1+2+4+8+16+32  ; 6
-        DB      128+1+2+0+0+0+32   ; 7
-        DB      128+1+2+4+8+16+32  ; 8
-        DB      128+1+2+4+8+16+32  ; 9
-
-DrawLives:
-        ; Draw lives at row 0, col 0-2
-        LD      A, 0
-        LD      C, A
-        LD      B, 0
-        CALL    ScreenAddr
-        LD      A, (LIVES)
-        LD      B, A
-        XOR     A
-        LD      (HL), A
-        INC     HL
-        LD      (HL), A
-        INC     HL
-        LD      (HL), A
-        RET
-
-AddScore:
-        LD      HL, SCORE
-        INC     (HL)
-        LD      A, (HL)
-        CP      10
-        JR      C, _as_done
-        XOR     A
-        LD      (HL), A
-        INC     HL
-        INC     (HL)
-_as_done:
-        CALL    DrawScore
-        RET
-
 FrameDelay:
         PUSH    BC
-        LD      BC, 3000H
+        LD      BC, 0A00H
 _fd_loop:
         DEC     BC
         LD      A, B
@@ -1062,103 +919,69 @@ _fd_loop:
         RET
 
 ; ============================================================
+; Sprite templates - generated from the target screenshots
+; (gen_sprites.py), blank margin left+right for self-clean.
+; Layout: type*60 + state*30 + ysub*10; 5 top + 5 bottom bytes.
+; ysub = vertical pixel shift 0..2 within the 2-char-row window.
+; ============================================================
+SPRITES:
+; type 0 - squid
+        DB      128,184,185,144,128,  128,130,130,128,128    ; state 0 ysub 0
+        DB      128,160,164,128,128,  128,139,139,129,128    ; state 0 ysub 1
+        DB      128,128,144,128,128,  128,174,174,132,128    ; state 0 ysub 2
+        DB      128,128,182,148,128,  128,130,128,130,128    ; state 1 ysub 0
+        DB      128,128,152,144,128,  128,136,131,137,128    ; state 1 ysub 1
+        DB      128,128,160,128,128,  128,160,141,165,128    ; state 1 ysub 2
+; type 1 - crab
+        DB      128,182,166,148,128,  128,130,130,128,128    ; state 0 ysub 0
+        DB      128,152,152,144,128,  128,139,138,129,128    ; state 0 ysub 1
+        DB      128,160,160,128,128,  128,173,169,133,128    ; state 0 ysub 2
+        DB      128,136,185,153,128,  128,130,128,130,128    ; state 1 ysub 0
+        DB      128,160,164,164,128,  128,136,131,137,128    ; state 1 ysub 1
+        DB      128,128,144,144,128,  128,162,142,166,128    ; state 1 ysub 2
+; type 2 - octopus
+        DB      128,182,183,148,128,  128,129,129,129,128    ; state 0 ysub 0
+        DB      128,152,156,144,128,  128,135,135,133,128    ; state 0 ysub 1
+        DB      128,160,176,128,128,  128,157,157,149,128    ; state 0 ysub 2
+        DB      128,168,187,185,128,  128,128,129,129,128    ; state 1 ysub 0
+        DB      128,160,172,164,128,  128,130,135,135,128    ; state 1 ysub 1
+        DB      128,128,176,144,128,  128,138,158,158,128    ; state 1 ysub 2
+
+TYPE_OFF:
+        DB      0, 60, 120
+YSUB_OFF:
+        DB      0, 10, 20
+
+; ============================================================
 ; Variables
 ; ============================================================
-        ORG     8000H
-
-PLAYER_X:         DB      0
-BULLET_ACTIVE:    DB      0
-BULLET_X:         DB      0
-BULLET_Y:         DB      0
-BULLET_STATE:     DB      0
-MOVE_CNT:         DB      0
-FORM_STATE:       DB      0
-FORM_DIR:         DB      0
-TURN_FLAG:        DB      0
-F_REG:            DB      0
-INV_TYPE_TMP:     DB      0
-TORP_ACTIVE:      DB      0
-TORP_X:             DB      0
-TORP_Y:             DB      0
-TORP_STATE:         DB      0
-TORP_CNT:           DB      0
-SCORE:            DB      0, 0
-LIVES:            DB      3
-
-INV_MATRIX:       DS      MAX_INV * INV_ENTRY
-
-; ============================================================
-; Sprite Data - 3 types, 2 states, 3 yPos variants
-; Each variant stores 5 bytes for the upper row and 5 bytes for the lower row.
-; The renderer copies 4 bytes from each row: leading blank + 3 visible chars.
-; Layout per type (60 bytes):
-;   S0_Y0: top5 + bot5
-;   S0_Y1: top5 + bot5
-;   S0_Y2: top5 + bot5
-;   S1_Y0: top5 + bot5
-;   S1_Y1: top5 + bot5
-;   S1_Y2: top5 + bot5
-; ============================================================
-        ORG     9000H
-SPRITE_BASE:
-; Sprite Data - 3 types, 2 states, 3 yPos, 5 bytes per row
-; Layout: type*60 + state*30 + yPos*10
-
-; Type 0 - Squid
-        DB      128,184,185,144,128
-        DB      128,130,130,128,128
-
-        DB      128,160,164,128,128
-        DB      128,139,139,129,128
-
-        DB      128,144,176,144,128
-        DB      128,174,174,132,128
-
-        DB      128,128,182,148,128
-        DB      128,130,128,130,128
-
-        DB      128,128,152,144,128
-        DB      128,136,131,137,128
-
-        DB      128,128,160,128,128
-        DB      128,160,141,165,128
-
-; Type 1 - Crab
-        DB      128,182,166,148,128
-        DB      128,130,130,128,128
-
-        DB      128,152,152,144,128
-        DB      128,139,138,129,128
-
-        DB      128,160,160,128,128
-        DB      128,173,169,133,128
-
-        DB      128,136,185,153,128
-        DB      128,130,128,130,128
-
-        DB      128,160,164,164,128
-        DB      128,136,131,137,128
-
-        DB      128,128,144,144,128
-        DB      128,162,142,166,128
-
-; Type 2 - Octopus
-        DB      128,182,183,148,128
-        DB      128,129,129,129,128
-
-        DB      128,152,156,144,128
-        DB      128,135,135,133,128
-
-        DB      128,160,176,128,128
-        DB      128,157,157,149,128
-
-        DB      128,168,187,185,128
-        DB      128,128,129,129,128
-
-        DB      128,160,172,164,128
-        DB      128,130,135,135,128
-
-        DB      128,128,176,144,128
-        DB      128,138,158,158,128
+PLAYER_X:       DB      0
+BUL_ACT:        DB      0
+BUL_X:          DB      0
+BUL_Y:          DB      0
+TORP_ACT:       DB      0
+TORP_X:         DB      0
+TORP_Y:         DB      0
+TORP_PH:        DB      0
+TORP_CNT:       DB      0
+FORM_COL:       DB      0
+FORM_ROW:       DB      0
+FORM_SUB:       DB      0
+FORM_YSUB:      DB      0
+FORM_DIR:       DB      0
+FORM_CNT:       DB      0
+ALIVE_CNT:      DB      0
+WAVE_DONE:      DB      0
+GAME_OVER:      DB      0
+LIVES:          DB      0
+SCORE_D:        DB      0,0,0,0
+HIT_ROW:        DB      0
+HIT_COL:        DB      0
+K_VAR:          DB      0
+F_VAR:          DB      0
+CUR_TMPL:       DW      0
+CUR_ADDR:       DW      0
+ALIVE_PTR:      DW      0
+ALIVE_ARR:      DS      INV_COLS * INV_ROWS
 
         END     START

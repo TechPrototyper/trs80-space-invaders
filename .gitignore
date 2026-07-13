@@ -1,0 +1,12 @@
+.DS_Store
+trs80-text-*.bin
+clean_shot_*.png
+trs80_game.png
+zout/*.wav
+zout/*.cas
+zout/*.ams
+zout/*.cim
+zout/*.hex
+zout/*.mds
+zout/*.tap
+zout/*.cmd
