@@ -90,7 +90,7 @@ _sp_hs:
         LD      DE, SCREEN + 7 * 64 + 31
         LD      BC, 11
         LDIR
-        LD      B, 8
+        LD      B, 9
         LD      C, 24
         LD      E, 0                    ; squid
         CALL    DrawTableSprite
@@ -98,7 +98,7 @@ _sp_hs:
         LD      DE, SCREEN + 9 * 64 + 31
         LD      BC, 11
         LDIR
-        LD      B, 10
+        LD      B, 11
         LD      C, 24
         LD      E, 1                    ; crab
         CALL    DrawTableSprite
@@ -106,7 +106,7 @@ _sp_hs:
         LD      DE, SCREEN + 11 * 64 + 31
         LD      BC, 11
         LDIR
-        LD      B, 12
+        LD      B, 13
         LD      C, 24
         LD      E, 2                    ; octopus
         CALL    DrawTableSprite
