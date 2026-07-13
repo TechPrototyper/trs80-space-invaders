@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Compare emulator VRAM dumps against target screenshots (rows 1-15).
-Row 0 carries the HUD (SCORE/LIVES) which the targets don't have."""
+"""Compare emulator VRAM dumps against target screenshots (rows 1-15,
+cols 5-63). Row 0 is the UFO lane; cols 0-4 are the status sidebar
+(SCORE/P1/reserve ships) - neither exists in the target images."""
 import sys
 sys.path.insert(0, '.')
 from extract_grid import extract, to_chars
@@ -19,7 +20,7 @@ def show(grid, label):
 def compare(dump, target, label):
     diffs = []
     for r in range(1, 16):
-        for c in range(64):
+        for c in range(5, 64):
             d, t = dump[r][c], target[r][c]
             if d == 32: d = 128  # space renders identical to blank graphics char
             if t == 32: t = 128
@@ -40,9 +41,9 @@ dumps = [load_dump(f'trs80-text-{i}.bin') for i in range(5)]
 
 # Identify which dumps match which state
 for i, d in enumerate(dumps):
-    m0 = sum(1 for r in range(1, 16) for c in range(64) if d[r][c] == t_start[r][c])
-    m1 = sum(1 for r in range(1, 16) for c in range(64) if d[r][c] == t_move1[r][c])
-    print(f"dump {i}: match-vs-start {m0}/960, match-vs-move1 {m1}/960")
+    m0 = sum(1 for r in range(1, 16) for c in range(5, 64) if d[r][c] == t_start[r][c])
+    m1 = sum(1 for r in range(1, 16) for c in range(5, 64) if d[r][c] == t_move1[r][c])
+    print(f"dump {i}: match-vs-start {m0}/885, match-vs-move1 {m1}/885")
 
 print()
 compare(dumps[0], t_start, "dump0 vs StartGame")

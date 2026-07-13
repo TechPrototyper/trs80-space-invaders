@@ -39,8 +39,9 @@ PLAYER_XMAX     EQU     61
 BULLET_CH       EQU     149     ; left pixel column lit
 TORP_CH         EQU     170     ; right pixel column lit
 
-UFO_XMIN        EQU     11      ; row-0 span clear of SCORE text
-UFO_XMAX        EQU     50      ; sprite is 3 wide, LIVES starts at 54
+SIDEBAR_W       EQU     5       ; columns 0..4 are the status sidebar
+UFO_XMIN        EQU     5       ; row 0 right of the sidebar is all UFO
+UFO_XMAX        EQU     61      ; sprite is 3 wide -> spans up to col 63
 
 ; ============================================================
 ; Entry
@@ -151,9 +152,15 @@ MainLoop:
         CALL    UpdateTorpedo
         CALL    MaybeFireTorpedo
         CALL    UpdateUFO
+        CALL    UpdateExplosions
+        ; wave ends only once the mystery ship is gone too
         LD      A, (WAVE_DONE)
         OR      A
-        CALL    NZ, InitWave
+        JR      Z, _ml_nowave
+        LD      A, (UFO_ACT)
+        OR      A
+        CALL    Z, InitWave
+_ml_nowave:
         LD      A, (GAME_OVER)
         OR      A
         JP      NZ, GameOver
@@ -182,6 +189,24 @@ InitWave:
         LD      (UFO_ACT), A
         LD      (UFO_PH), A
         CALL    UFOReload
+        ; snuff any running explosions (row-0 ones survive the area clear)
+        LD      IX, EXPL_TBL
+        LD      B, NEXPL
+_iw_expl:
+        LD      A, (IX+0)
+        OR      A
+        JR      Z, _iw_exnext
+        PUSH    BC
+        LD      B, (IX+2)
+        LD      C, (IX+3)
+        LD      E, (IX+4)
+        CALL    ExplErase
+        POP     BC
+        LD      (IX+0), 0
+_iw_exnext:
+        LD      DE, 5
+        ADD     IX, DE
+        DJNZ    _iw_expl
         XOR     A
         LD      (WAVE_DONE), A
         LD      (BUL_ACT), A
@@ -221,28 +246,31 @@ _iw_fill:
         CALL    DrawShields
         CALL    DrawPlayer
         CALL    DrawFormation
+        CALL    DrawHUD                 ; area clear wiped the sidebar rows
         RET
 
 ; ============================================================
-; DrawHUD - row 0: SCORE nnnn ... LIVES n
+; DrawHUD - status sidebar in columns 0..4: SCORE + digits,
+; player tag, reserve ships bottom-left. Row 0 right of the
+; sidebar stays free for the mystery ship.
 ; ============================================================
 DrawHUD:
         LD      HL, TXT_SCORE
         LD      DE, SCREEN
-        LD      BC, 6
+        LD      BC, 5
         LDIR
-        LD      HL, TXT_LIVES
-        LD      DE, SCREEN + 54
-        LD      BC, 6
+        LD      HL, TXT_P1
+        LD      DE, SCREEN + 3 * 64
+        LD      BC, 2
         LDIR
         CALL    DrawScore
         CALL    DrawLives
         RET
 
 TXT_SCORE:
-        DB      'SCORE '
-TXT_LIVES:
-        DB      'LIVES '
+        DB      'SCORE'
+TXT_P1:
+        DB      'P1'
 TXT_OVER:
         DB      'GAME OVER'
 TXT_AGAIN:
@@ -291,7 +319,7 @@ _dts_nc:
 
 DrawScore:
         LD      HL, SCORE_D
-        LD      DE, SCREEN + 6
+        LD      DE, SCREEN + 64         ; sidebar row 1
         LD      B, 4
 _dsc_loop:
         LD      A, (HL)
@@ -302,10 +330,41 @@ _dsc_loop:
         DJNZ    _dsc_loop
         RET
 
+; DrawLives - reserve ships (LIVES-1, max 3) parked bottom-left
 DrawLives:
+        LD      HL, SCREEN + 13 * 64
+        CALL    _dl_blank3
+        LD      HL, SCREEN + 14 * 64
+        CALL    _dl_blank3
+        LD      HL, SCREEN + 15 * 64
+        CALL    _dl_blank3
         LD      A, (LIVES)
-        ADD     A, '0'
-        LD      (SCREEN + 60), A
+        OR      A
+        RET     Z
+        DEC     A
+        RET     Z
+        CP      3
+        JR      C, _dl_n
+        LD      A, 3
+_dl_n:
+        LD      B, A
+        LD      HL, SCREEN + 15 * 64
+_dl_draw:
+        LD      (HL), 160               ; the player ship glyph
+        INC     HL
+        LD      (HL), 184
+        INC     HL
+        LD      (HL), 176
+        LD      DE, -66                 ; one row up, back to col 0
+        ADD     HL, DE
+        DJNZ    _dl_draw
+        RET
+_dl_blank3:
+        LD      (HL), BLANK
+        INC     HL
+        LD      (HL), BLANK
+        INC     HL
+        LD      (HL), BLANK
         RET
 
 ; AddScoreTens: A = tens to add (1..3), updates display
@@ -408,8 +467,8 @@ ReadKeys:
         BIT     5, B                    ; LEFT
         JR      Z, _rk_right
         LD      A, (PLAYER_X)
-        OR      A
-        JR      Z, _rk_right
+        CP      SIDEBAR_W + 1
+        JR      C, _rk_right            ; stay right of the sidebar
         CALL    ErasePlayer
         LD      HL, PLAYER_X
         DEC     (HL)
@@ -587,7 +646,8 @@ _ri_fail:
         OR      1                       ; NZ = miss
         RET
 
-; EraseHitInvader - blank 5x2 chars at slot (HIT_ROW, HIT_COL)
+; EraseHitInvader - explosion animation over slot (HIT_ROW, HIT_COL);
+; the explosion self-erases the 5x2 area when it burns out
 EraseHitInvader:
         LD      A, (HIT_ROW)
         ADD     A, A
@@ -603,20 +663,8 @@ EraseHitInvader:
         DEC     A
         ADD     A, C
         LD      C, A                    ; char col (blit origin)
-        CALL    ScreenAddr
-        LD      B, 5
-_ehi_top:
-        LD      (HL), BLANK
-        INC     HL
-        DJNZ    _ehi_top
-        LD      DE, 59
-        ADD     HL, DE
-        LD      B, 5
-_ehi_bot:
-        LD      (HL), BLANK
-        INC     HL
-        DJNZ    _ehi_bot
-        RET
+        LD      E, 0
+        JP      SpawnExplosion
 
 ROW_TYPE:
         DB      0, 1, 1, 2, 2           ; squid, crab, crab, octopus, octopus
@@ -682,7 +730,7 @@ _uf_l_char:
         LD      C, A
         LD      A, (FORM_COL)
         ADD     A, C                    ; char col of leftmost alive invader
-        CP      2                       ; its blit spans -1 -> col 0
+        CP      SIDEBAR_W + 2           ; its blit spans -1 -> sidebar edge
         JR      C, _uf_desc_r
         LD      A, (FORM_COL)
         DEC     A
@@ -1013,8 +1061,39 @@ _ut_player:
         RET     C                       ; left of player
         CP      3
         RET     NC                      ; right of player
-        ; player hit!
-        CALL    DeathSound
+        ; player hit! synchronous explosion over the ship
+        LD      A, (PLAYER_X)
+        LD      C, A
+        LD      B, PLAYER_ROW
+        LD      E, 1
+        LD      D, 0
+        CALL    ExplDrawStage
+        CALL    DeathSound              ; doubles as the stage-0 hold
+        LD      A, (PLAYER_X)
+        LD      C, A
+        LD      B, PLAYER_ROW
+        LD      E, 1
+        LD      D, 1
+        CALL    ExplDrawStage
+        LD      B, 5
+_utp1:
+        CALL    FrameDelay
+        DJNZ    _utp1
+        LD      A, (PLAYER_X)
+        LD      C, A
+        LD      B, PLAYER_ROW
+        LD      E, 1
+        LD      D, 2
+        CALL    ExplDrawStage
+        LD      B, 5
+_utp2:
+        CALL    FrameDelay
+        DJNZ    _utp2
+        LD      A, (PLAYER_X)
+        LD      C, A
+        LD      B, PLAYER_ROW
+        LD      E, 1
+        CALL    ExplErase
         LD      HL, LIVES
         DEC     (HL)
         CALL    DrawLives
@@ -1026,11 +1105,169 @@ _ut_player:
         RET
 _ut_respawn:
         CALL    DrawPlayer              ; redraw (torpedo never overwrote it)
-        LD      B, 12                   ; short dramatic pause
+        LD      B, 4                    ; short breather before play resumes
 _ut_pause:
         CALL    FrameDelay
         DJNZ    _ut_pause
         RET
+
+; ============================================================
+; Explosions - up to NEXPL concurrent, three diffusion stages
+; (dense core -> spread -> sparse dots), each confined to the
+; sprite's own blit area, then self-erasing.
+; Slot: timer, stage, row, col, kind (0 = 5x2 invader, 1 = 3x1 strip)
+; ============================================================
+NEXPL           EQU     4
+EXPL_STAGE_LEN  EQU     3               ; game frames per stage
+
+; SpawnExplosion: B=row, C=col (blit origin), E=kind.
+; No free slot -> just blank the area (sprite must not linger).
+SpawnExplosion:
+        LD      HL, EXPL_TBL
+        LD      D, NEXPL
+_se_find:
+        LD      A, (HL)
+        OR      A
+        JR      Z, _se_take
+        LD      A, L
+        ADD     A, 5
+        LD      L, A
+        JR      NC, _se_nc
+        INC     H
+_se_nc:
+        DEC     D
+        JR      NZ, _se_find
+        JP      ExplErase
+_se_take:
+        LD      (HL), EXPL_STAGE_LEN
+        INC     HL
+        LD      (HL), 0                 ; stage
+        INC     HL
+        LD      (HL), B
+        INC     HL
+        LD      (HL), C
+        INC     HL
+        LD      (HL), E
+        LD      D, 0
+        JP      ExplDrawStage
+
+; UpdateExplosions - tick timers, advance stages, erase at the end
+UpdateExplosions:
+        LD      IX, EXPL_TBL
+        LD      B, NEXPL
+_ue_loop:
+        LD      A, (IX+0)
+        OR      A
+        JR      Z, _ue_next
+        DEC     A
+        LD      (IX+0), A
+        JR      NZ, _ue_next
+        LD      A, (IX+1)
+        INC     A
+        CP      3
+        JR      NC, _ue_erase
+        LD      (IX+1), A
+        LD      (IX+0), EXPL_STAGE_LEN
+        PUSH    BC
+        LD      D, A
+        LD      B, (IX+2)
+        LD      C, (IX+3)
+        LD      E, (IX+4)
+        CALL    ExplDrawStage
+        POP     BC
+        JR      _ue_next
+_ue_erase:
+        PUSH    BC
+        LD      B, (IX+2)
+        LD      C, (IX+3)
+        LD      E, (IX+4)
+        CALL    ExplErase
+        POP     BC                      ; timer stayed 0 -> slot free
+_ue_next:
+        LD      DE, 5
+        ADD     IX, DE
+        DJNZ    _ue_loop
+        RET
+
+; ExplDrawStage: B=row, C=col, D=stage 0..2, E=kind
+ExplDrawStage:
+        CALL    ScreenAddr              ; HL = target (preserves DE)
+        LD      A, E
+        OR      A
+        JR      NZ, _eds_strip
+        LD      A, D                    ; kind 0: src = EXPL_INV + stage*10
+        ADD     A, A
+        ADD     A, A
+        ADD     A, A
+        ADD     A, D
+        ADD     A, D
+        EX      DE, HL
+        LD      L, A
+        LD      H, 0
+        LD      BC, EXPL_INV
+        ADD     HL, BC
+        LD      BC, 5
+        LDIR
+        LD      A, E
+        ADD     A, 59
+        LD      E, A
+        JR      NC, _eds_nc
+        INC     D
+_eds_nc:
+        LD      BC, 5
+        LDIR
+        RET
+_eds_strip:
+        LD      A, D                    ; kind 1: src = EXPL_STRIP + stage*3
+        ADD     A, A
+        ADD     A, D
+        EX      DE, HL
+        LD      L, A
+        LD      H, 0
+        LD      BC, EXPL_STRIP
+        ADD     HL, BC
+        LD      BC, 3
+        LDIR
+        RET
+
+; ExplErase: B=row, C=col, E=kind
+ExplErase:
+        CALL    ScreenAddr
+        LD      A, E
+        OR      A
+        JR      NZ, _ee_strip
+        LD      B, 5
+_ee_top:
+        LD      (HL), BLANK
+        INC     HL
+        DJNZ    _ee_top
+        LD      DE, 59
+        ADD     HL, DE
+        LD      B, 5
+_ee_bot:
+        LD      (HL), BLANK
+        INC     HL
+        DJNZ    _ee_bot
+        RET
+_ee_strip:
+        LD      (HL), BLANK
+        INC     HL
+        LD      (HL), BLANK
+        INC     HL
+        LD      (HL), BLANK
+        RET
+
+EXPL_INV:                               ; 3 stages x (5 top + 5 bottom)
+        DB      128, 158, 187, 173, 128 ; dense core, margins clear
+        DB      128, 181, 190, 166, 128
+        DB      136, 133, 146, 168, 129 ; spread into the margins
+        DB      130, 152, 133, 144, 136
+        DB      129, 128, 132, 128, 160 ; sparse dots at the edges
+        DB      144, 132, 128, 136, 130
+EXPL_STRIP:                             ; 3 stages x 3 (UFO / player)
+        DB      157, 191, 174
+        DB      141, 181, 166
+        DB      129, 148, 160
 
 ; ============================================================
 ; Shield erosion - one pixel row of the block char per hit.
@@ -1126,12 +1363,21 @@ _uu_draw:
         LD      C, A
         LD      B, 0
         CALL    ScreenAddr
-        LD      (HL), 174               ; saucer: .####. / ###### / .#..#.
-        INC     HL
-        LD      (HL), 143
-        INC     HL
-        LD      (HL), 157
+        EX      DE, HL
+        LD      A, (UFO_X)              ; feet wiggle: frame by X parity
+        AND     1
+        LD      HL, UFO_SPR_A
+        JR      Z, _uud_blit
+        LD      HL, UFO_SPR_B
+_uud_blit:
+        LD      BC, 3
+        LDIR
         RET
+
+UFO_SPR_A:
+        DB      174, 143, 157           ; saucer: .####. / ###### / .#..#.
+UFO_SPR_B:
+        DB      158, 143, 173           ; feet swapped outward
 _uu_gone:
         XOR     A
         LD      (UFO_ACT), A
@@ -1157,7 +1403,11 @@ EraseUFO:
 ; KillUFO - bullet reached row 0 inside the UFO: mystery score
 ; 50/100/150/200 awarded in 50-point chunks (AddScoreTens caps at +10)
 KillUFO:
-        CALL    EraseUFO
+        LD      A, (UFO_X)
+        LD      C, A
+        LD      B, 0
+        LD      E, 1
+        CALL    SpawnExplosion          ; overdraws + later erases the saucer
         XOR     A
         LD      (UFO_ACT), A
         CALL    UFOReload
@@ -1196,6 +1446,22 @@ _go_new:
         LD      BC, 4
         LDIR
 _go_msg:
+        ; clear a window so the text is readable over the battlefield
+        LD      B, 6
+_go_clr:
+        PUSH    BC
+        LD      C, 23
+        CALL    ScreenAddr
+        LD      B, 19
+_go_cl2:
+        LD      (HL), BLANK
+        INC     HL
+        DJNZ    _go_cl2
+        POP     BC
+        INC     B
+        LD      A, B
+        CP      11
+        JR      C, _go_clr
         LD      HL, TXT_OVER
         LD      DE, SCREEN + 7 * 64 + 27
         LD      BC, 9
@@ -1266,7 +1532,7 @@ _pew_loop:
         RET
 
 BoomSound:
-        LD      B, 25
+        LD      B, 35
 _boom_loop:
         LD      A, 1
         OUT     (SOUND_PORT), A
@@ -1277,7 +1543,7 @@ _boom_loop:
         CALL    SoundDelay
         XOR     A
         OUT     (SOUND_PORT), A
-        LD      C, 60
+        LD      C, 80
         CALL    SoundDelay
         DJNZ    _boom_loop
         RET
@@ -1436,6 +1702,11 @@ UFO_PH:         DB      0
 UFO_CNT:        DB      0
 MARCH_IX:       DB      0
 HISCORE_D:      DB      0, 0, 0, 0
+EXPL_TBL:                               ; NEXPL x (timer,stage,row,col,kind)
+        DB      0, 0, 0, 0, 0
+        DB      0, 0, 0, 0, 0
+        DB      0, 0, 0, 0, 0
+        DB      0, 0, 0, 0, 0
 CUR_TMPL:       DW      0
 CUR_ADDR:       DW      0
 ALIVE_PTR:      DW      0
