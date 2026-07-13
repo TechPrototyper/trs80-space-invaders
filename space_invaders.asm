@@ -220,8 +220,6 @@ _iw_exnext:
         LD      (TORP_CNT), A
         LD      A, FORM_COL0
         LD      (FORM_COL), A
-        LD      A, FORM_ROW0
-        LD      (FORM_ROW), A
         LD      A, 14
         LD      (FORM_CNT), A           ; grace; accu needs 16 more frames,
                                         ; so step 1 lands on frame 30 as before
@@ -229,6 +227,24 @@ _iw_exnext:
         LD      (FORM_ACC), HL
         LD      HL, WAVE_NUM
         INC     (HL)
+        ; per-wave start depth: later waves begin lower (pixel-wise),
+        ; capped at wave 5 = one YSUB step above the last playable row
+        LD      A, (HL)
+        DEC     A                       ; 0-based wave index
+        CP      NWAVE_START
+        JR      C, _iw_dcap
+        LD      A, NWAVE_START - 1
+_iw_dcap:
+        ADD     A, A                    ; 2 bytes per entry
+        LD      E, A
+        LD      D, 0
+        LD      HL, WAVE_START_TBL
+        ADD     HL, DE
+        LD      A, (HL)
+        LD      (FORM_ROW), A
+        INC     HL
+        LD      A, (HL)
+        LD      (FORM_YSUB), A
         LD      A, INV_COLS * INV_ROWS
         LD      (ALIVE_CNT), A
         LD      A, PLAYER_X0
@@ -680,6 +696,16 @@ TYPE_PTS:
 ; Torpedo reload scale per wave (1..12+), 32 = 1.0, /1.2 each wave
 TORP_SCL:
         DB      32, 27, 22, 18, 15, 13, 11, 9, 8, 7, 6, 5
+
+; Formation start position per wave: FORM_ROW, FORM_YSUB pairs.
+; Wave 1 must stay (FORM_ROW0, 0) - the target images depend on it.
+WAVE_START_TBL:
+        DB      FORM_ROW0, 0            ; wave 1
+        DB      FORM_ROW0, 2            ; wave 2
+        DB      FORM_ROW0 + 1, 0        ; wave 3
+        DB      FORM_ROW0 + 1, 1        ; wave 4
+        DB      FORM_ROW0 + 1, 2        ; wave 5+
+NWAVE_START     EQU     5
 
 ; March speed by ALIVE_CNT (index 1..55), 8.8 fixed-point px/frame.
 ; Generated curve: per-kill delta grows from ~1.6 to ~6 units, i.e.
