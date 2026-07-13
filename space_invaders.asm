@@ -25,8 +25,10 @@ BLANK           EQU     128
 ; --- Layout (from target screenshots) ---
 FORM_COL0       EQU     13      ; leftmost invader char column at start
 FORM_ROW0       EQU     1       ; top invader char row at start
-COL_MIN         EQU     1
-COL_MAX         EQU     20
+; March limits are computed from the outermost ALIVE column, so the
+; formation keeps marching until the surviving edge invader touches
+; the screen border. FORM_COL is treated as SIGNED (can go negative
+; when left formation columns are dead).
 INV_COLS        EQU     11
 INV_ROWS        EQU     5
 SHIELD_ROW      EQU     13
@@ -383,8 +385,9 @@ ResolveInvaderHit:
         LD      A, (FORM_COL)
         LD      C, A
         LD      A, (BUL_X)
-        SUB     C
-        JR      C, _ri_fail
+        SUB     C                       ; signed offset, FORM_COL may be < 0
+        CP      4 * INV_COLS            ; negative wraps high -> also fails
+        JR      NC, _ri_fail
         LD      B, A
         AND     3
         CP      3
@@ -481,6 +484,9 @@ TYPE_PTS:
 ; UpdateFormation - one pixel step every FORM_CNT frames
 ; ============================================================
 UpdateFormation:
+        LD      A, (ALIVE_CNT)
+        OR      A
+        RET     Z
         LD      HL, FORM_CNT
         DEC     (HL)
         RET     NZ
@@ -502,9 +508,16 @@ UpdateFormation:
         LD      (FORM_SUB), A
         JP      DrawFormation
 _uf_r_char:
+        CALL    FindEdges               ; E = rightmost alive column
+        LD      A, E
+        ADD     A, A
+        ADD     A, A
+        LD      C, A
         LD      A, (FORM_COL)
-        CP      COL_MAX
-        JR      Z, _uf_desc_l
+        ADD     A, C                    ; char col of rightmost alive invader
+        CP      60                      ; its blit spans +3 -> col 63
+        JR      NC, _uf_desc_l
+        LD      A, (FORM_COL)
         INC     A
         LD      (FORM_COL), A
         XOR     A
@@ -518,9 +531,16 @@ _uf_left:
         LD      (FORM_SUB), A
         JP      DrawFormation
 _uf_l_char:
+        CALL    FindEdges               ; D = leftmost alive column
+        LD      A, D
+        ADD     A, A
+        ADD     A, A
+        LD      C, A
         LD      A, (FORM_COL)
-        CP      COL_MIN
-        JR      Z, _uf_desc_r
+        ADD     A, C                    ; char col of leftmost alive invader
+        CP      2                       ; its blit spans -1 -> col 0
+        JR      C, _uf_desc_r
+        LD      A, (FORM_COL)
         DEC     A
         LD      (FORM_COL), A
         LD      A, 1
@@ -558,20 +578,77 @@ _uf_desc_ok:
         LD      (FORM_YSUB), A
         JP      DrawFormation
 
+; FindEdges - D = leftmost alive column, E = rightmost alive column
+; (0..10). Requires at least one alive invader.
+FindEdges:
+        LD      D, 0FFH
+        LD      E, 0
+        LD      C, 0                    ; column index
+_fe_col:
+        LD      HL, ALIVE_ARR
+        LD      A, C
+        ADD     A, L
+        LD      L, A
+        JR      NC, _fe_nc0
+        INC     H
+_fe_nc0:
+        LD      B, INV_ROWS
+_fe_row:
+        LD      A, (HL)
+        OR      A
+        JR      NZ, _fe_alive
+        LD      A, L
+        ADD     A, INV_COLS
+        LD      L, A
+        JR      NC, _fe_nc1
+        INC     H
+_fe_nc1:
+        DJNZ    _fe_row
+        JR      _fe_next
+_fe_alive:
+        LD      A, D
+        CP      0FFH
+        JR      NZ, _fe_r
+        LD      D, C
+_fe_r:
+        LD      E, C
+_fe_next:
+        INC     C
+        LD      A, C
+        CP      INV_COLS
+        JR      NZ, _fe_col
+        RET
+
 ; EraseTopStripes - on char-row rollover the top char row of every
-; formation row goes stale; blank those 5 stripes (45 chars wide).
+; formation row goes stale; blank those 5 stripes over the span of
+; the alive columns (only there were sprites drawn).
 EraseTopStripes:
+        CALL    FindEdges               ; D = left col, E = right col
+        LD      A, E
+        SUB     D
+        ADD     A, A
+        ADD     A, A
+        ADD     A, 5
+        LD      (ETS_W), A              ; stripe width in chars
+        LD      A, D
+        ADD     A, A
+        ADD     A, A
+        LD      C, A
+        LD      A, (FORM_COL)
+        ADD     A, C
+        DEC     A
+        LD      (ETS_X), A              ; blit start col (>= 0 by march limits)
         LD      A, (FORM_ROW)
         LD      B, A                    ; stripe row
         LD      D, 5                    ; 5 formation rows
 _ets_loop:
         PUSH    DE
         PUSH    BC
-        LD      A, (FORM_COL)
-        DEC     A
+        LD      A, (ETS_X)
         LD      C, A
         CALL    ScreenAddr
-        LD      B, 45
+        LD      A, (ETS_W)
+        LD      B, A
 _ets_fill:
         LD      (HL), BLANK
         INC     HL
@@ -859,6 +936,10 @@ ScreenAddr:
         ADD     HL, DE
         LD      E, C
         LD      D, 0
+        BIT     7, E
+        JR      Z, _sa_pos
+        DEC     D                       ; sign-extend: col may be negative
+_sa_pos:
         ADD     HL, DE
         POP     DE
         POP     AF
@@ -979,6 +1060,8 @@ HIT_ROW:        DB      0
 HIT_COL:        DB      0
 K_VAR:          DB      0
 F_VAR:          DB      0
+ETS_X:          DB      0
+ETS_W:          DB      0
 CUR_TMPL:       DW      0
 CUR_ADDR:       DW      0
 ALIVE_PTR:      DW      0
