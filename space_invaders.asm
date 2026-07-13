@@ -49,6 +49,88 @@ START:
         DI
         LD      SP, 7FFFH
 
+; ============================================================
+; Splash - title + high score, wait for a SPACE tap.
+; Waits press AND release so the game doesn't start firing.
+; ============================================================
+Splash:
+        CALL    Cls
+        LD      HL, TXT_TITLE
+        LD      DE, SCREEN + 1 * 64 + 25
+        LD      BC, 14
+        LDIR
+        LD      HL, TXT_MISSION
+        LD      DE, SCREEN + 3 * 64 + 16
+        LD      BC, 32
+        LDIR
+        LD      HL, TXT_HISC
+        LD      DE, SCREEN + 5 * 64 + 24
+        LD      BC, 11
+        LDIR
+        LD      HL, HISCORE_D
+        LD      DE, SCREEN + 5 * 64 + 35
+        LD      B, 4
+_sp_hs:
+        LD      A, (HL)
+        ADD     A, '0'
+        LD      (DE), A
+        INC     HL
+        INC     DE
+        DJNZ    _sp_hs
+        ; score advance table: saucer + the three invader types
+        LD      B, 7
+        LD      C, 25
+        CALL    ScreenAddr
+        LD      (HL), 174
+        INC     HL
+        LD      (HL), 143
+        INC     HL
+        LD      (HL), 157
+        LD      HL, TXT_MYST
+        LD      DE, SCREEN + 7 * 64 + 31
+        LD      BC, 11
+        LDIR
+        LD      B, 8
+        LD      C, 24
+        LD      E, 0                    ; squid
+        CALL    DrawTableSprite
+        LD      HL, TXT_P30
+        LD      DE, SCREEN + 9 * 64 + 31
+        LD      BC, 11
+        LDIR
+        LD      B, 10
+        LD      C, 24
+        LD      E, 1                    ; crab
+        CALL    DrawTableSprite
+        LD      HL, TXT_P20
+        LD      DE, SCREEN + 11 * 64 + 31
+        LD      BC, 11
+        LDIR
+        LD      B, 12
+        LD      C, 24
+        LD      E, 2                    ; octopus
+        CALL    DrawTableSprite
+        LD      HL, TXT_P10
+        LD      DE, SCREEN + 13 * 64 + 31
+        LD      BC, 11
+        LDIR
+        LD      HL, TXT_START
+        LD      DE, SCREEN + 15 * 64 + 22
+        LD      BC, 20
+        LDIR
+_sp_rel:
+        LD      A, (KBD_CTL)
+        BIT     7, A
+        JR      NZ, _sp_rel
+_sp_prs:
+        LD      A, (KBD_CTL)
+        BIT     7, A
+        JR      Z, _sp_prs
+_sp_rel2:
+        LD      A, (KBD_CTL)
+        BIT     7, A
+        JR      NZ, _sp_rel2
+
 RESTART:
         CALL    Cls
         XOR     A
@@ -165,6 +247,47 @@ TXT_OVER:
         DB      'GAME OVER'
 TXT_AGAIN:
         DB      'PRESS SPACE'
+TXT_TITLE:
+        DB      'SPACE INVADERS'
+TXT_HISC:
+        DB      'HIGH SCORE '
+TXT_START:
+        DB      'PRESS SPACE TO START'
+TXT_MISSION:
+        DB      'DEFEND EARTH - STOP THE INVASION'
+TXT_MYST:
+        DB      '= ? MYSTERY'
+TXT_P30:
+        DB      '= 30 POINTS'
+TXT_P20:
+        DB      '= 20 POINTS'
+TXT_P10:
+        DB      '= 10 POINTS'
+
+; DrawTableSprite - splash helper: blit invader type E (0..2),
+; state 0 / ysub 0, at B=row (2 rows), C=col (5 chars)
+DrawTableSprite:
+        LD      D, 0
+        LD      HL, TYPE_OFF
+        ADD     HL, DE
+        LD      A, (HL)                 ; type*60
+        CALL    ScreenAddr              ; HL = target (preserves A, DE)
+        EX      DE, HL
+        LD      L, A
+        LD      H, 0
+        LD      BC, SPRITES
+        ADD     HL, BC
+        LD      BC, 5
+        LDIR
+        LD      A, E
+        ADD     A, 59
+        LD      E, A
+        JR      NC, _dts_nc
+        INC     D
+_dts_nc:
+        LD      BC, 5
+        LDIR
+        RET
 
 DrawScore:
         LD      HL, SCORE_D
@@ -320,7 +443,7 @@ _rk_fire:
         CP      BLANK
         JR      Z, _rk_fire_ok
         ; shot straight into own shield: erode it, no bullet
-        LD      (HL), BLANK
+        CALL    ErodeShieldUp
         JP      PewSound
 _rk_fire_ok:
         LD      (HL), BULLET_CH
@@ -386,8 +509,7 @@ _ub_hit:
         LD      A, (BUL_Y)
         LD      B, A
         CALL    ScreenAddr
-        LD      (HL), BLANK
-        RET
+        JP      ErodeShieldUp
 
 ; ============================================================
 ; ResolveInvaderHit - map (BUL_X,BUL_Y) to formation slot.
@@ -517,6 +639,7 @@ UpdateFormation:
         SRL     A
         ADD     A, 2
         LD      (HL), A
+        CALL    MarchTick
         ; step
         LD      A, (FORM_DIR)
         OR      A
@@ -879,9 +1002,8 @@ _ut_hit:
         JR      Z, _ut_player
         CP      SHIELD_ROW
         RET     C                       ; hit bullet/invader region: vanish
-        ; erode shield
-        LD      (HL), BLANK
-        RET
+        ; erode shield from above
+        JP      ErodeShieldDown
 _ut_player:
         ; hit something on player row - the player?
         LD      A, (PLAYER_X)
@@ -892,7 +1014,7 @@ _ut_player:
         CP      3
         RET     NC                      ; right of player
         ; player hit!
-        CALL    BoomSound
+        CALL    DeathSound
         LD      HL, LIVES
         DEC     (HL)
         CALL    DrawLives
@@ -908,6 +1030,50 @@ _ut_respawn:
 _ut_pause:
         CALL    FrameDelay
         DJNZ    _ut_pause
+        RET
+
+; ============================================================
+; Shield erosion - one pixel row of the block char per hit.
+; Graphics char = 128 + 6 bits: 0/1 top, 2/3 middle, 4/5 bottom.
+; ============================================================
+ErodeShieldUp:                          ; player bullet, from below
+        LD      A, (HL)
+        AND     30H
+        JR      Z, _esu_mid
+        LD      A, (HL)
+        AND     0CFH                    ; clear bottom pixel row
+        LD      (HL), A
+        RET
+_esu_mid:
+        LD      A, (HL)
+        AND     0CH
+        JR      Z, _esu_top
+        LD      A, (HL)
+        AND     0F3H                    ; clear middle pixel row
+        LD      (HL), A
+        RET
+_esu_top:
+        LD      (HL), BLANK
+        RET
+
+ErodeShieldDown:                        ; invader torpedo, from above
+        LD      A, (HL)
+        AND     03H
+        JR      Z, _esd_mid
+        LD      A, (HL)
+        AND     0FCH                    ; clear top pixel row
+        LD      (HL), A
+        RET
+_esd_mid:
+        LD      A, (HL)
+        AND     0CH
+        JR      Z, _esd_bot
+        LD      A, (HL)
+        AND     0F3H                    ; clear middle pixel row
+        LD      (HL), A
+        RET
+_esd_bot:
+        LD      (HL), BLANK
         RET
 
 ; ============================================================
@@ -940,6 +1106,7 @@ _uu_fly:
         LD      (UFO_PH), A
         RET     Z                       ; move every 2nd frame
         CALL    EraseUFO
+        CALL    UFOBlip
         LD      A, (UFO_DIR)
         OR      A
         LD      A, (UFO_X)
@@ -1010,6 +1177,25 @@ _ku_score:
 ; GameOver - message, wait for SPACE, restart
 ; ============================================================
 GameOver:
+        ; new high score? (digit arrays, most significant first)
+        LD      B, 4
+        LD      HL, HISCORE_D
+        LD      DE, SCORE_D
+_go_cmp:
+        LD      A, (DE)
+        CP      (HL)
+        JR      C, _go_msg              ; score < hiscore: keep
+        JR      NZ, _go_new             ; score > hiscore: record
+        INC     HL
+        INC     DE
+        DJNZ    _go_cmp
+        JR      _go_msg                 ; equal: keep
+_go_new:
+        LD      HL, SCORE_D
+        LD      DE, HISCORE_D
+        LD      BC, 4
+        LDIR
+_go_msg:
         LD      HL, TXT_OVER
         LD      DE, SCREEN + 7 * 64 + 27
         LD      BC, 9
@@ -1027,7 +1213,7 @@ _go_prs:
         LD      A, (KBD_CTL)
         BIT     7, A
         JR      Z, _go_prs
-        JP      RESTART
+        JP      Splash
 
 ; ============================================================
 ; ScreenAddr: B=row, C=col -> HL = SCREEN + row*64 + col
@@ -1094,6 +1280,70 @@ _boom_loop:
         LD      C, 60
         CALL    SoundDelay
         DJNZ    _boom_loop
+        RET
+
+; MarchTick - the classic four-note bass loop, one note per
+; formation step (lower period value = higher pitch)
+MarchTick:
+        LD      A, (MARCH_IX)
+        INC     A
+        AND     3
+        LD      (MARCH_IX), A
+        LD      E, A
+        LD      D, 0
+        LD      HL, MARCH_TBL
+        ADD     HL, DE
+        LD      D, (HL)
+        LD      B, 2                    ; pulses
+_mt_loop:
+        LD      A, 1
+        OUT     (SOUND_PORT), A
+        LD      C, D
+        CALL    SoundDelay
+        LD      C, D
+        CALL    SoundDelay
+        XOR     A
+        OUT     (SOUND_PORT), A
+        LD      C, D
+        CALL    SoundDelay
+        LD      C, D
+        CALL    SoundDelay
+        DJNZ    _mt_loop
+        RET
+MARCH_TBL:
+        DB      180, 200, 220, 240
+
+; UFOBlip - short high chirp on every saucer move
+UFOBlip:
+        LD      B, 2
+_ufb_loop:
+        LD      A, 1
+        OUT     (SOUND_PORT), A
+        LD      C, 20
+        CALL    SoundDelay
+        XOR     A
+        OUT     (SOUND_PORT), A
+        LD      C, 20
+        CALL    SoundDelay
+        DJNZ    _ufb_loop
+        RET
+
+; DeathSound - longer, deeper rumble than BoomSound
+DeathSound:
+        LD      B, 60
+_dth_loop:
+        LD      A, 1
+        OUT     (SOUND_PORT), A
+        LD      A, R
+        AND     127
+        ADD     A, 60
+        LD      C, A
+        CALL    SoundDelay
+        XOR     A
+        OUT     (SOUND_PORT), A
+        LD      C, 90
+        CALL    SoundDelay
+        DJNZ    _dth_loop
         RET
 
 SoundDelay:                             ; C * ~13 T-states
@@ -1184,6 +1434,8 @@ UFO_X:          DB      0
 UFO_DIR:        DB      0
 UFO_PH:         DB      0
 UFO_CNT:        DB      0
+MARCH_IX:       DB      0
+HISCORE_D:      DB      0, 0, 0, 0
 CUR_TMPL:       DW      0
 CUR_ADDR:       DW      0
 ALIVE_PTR:      DW      0
