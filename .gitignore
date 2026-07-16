@@ -29,3 +29,7 @@ REFACTOR_PLAN.md
 .claude/
 .mypy_cache/
 __pycache__/
+
+# local editor / scratch
+.tmp/
+.vscode/

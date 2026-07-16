@@ -14,7 +14,7 @@
 ; Keys:     Left/Right arrows move, SPACE fires
 ; ============================================================
 
-        ORG     5200H
+        ORG     5500H
 
 ; --- Hardware ---
 SCREEN          EQU     3C00H
@@ -119,6 +119,16 @@ _sp_hs:
         LD      DE, SCREEN + 15 * 64 + 22
         LD      BC, 20
         LDIR
+        ; The credits ticker is deliberately NOT reset here: MARQ_S and
+        ; MARQ_DONE start at zero from the load image, so the ticker runs
+        ; its three passes on the first splash only and stays gone for
+        ; every later one.
+        ; BREAK may still be held from leaving a game - wait it out,
+        ; otherwise _sp_prs would read it and drop straight to DOS
+_sp_brel:
+        LD      A, (KBD_CTL)
+        BIT     2, A
+        JR      NZ, _sp_brel
 _sp_rel:
         LD      A, (KBD_CTL)
         BIT     7, A
@@ -126,11 +136,22 @@ _sp_rel:
 _sp_prs:
         LD      A, (KBD_CTL)
         BIT     7, A
-        JR      Z, _sp_prs
+        JR      NZ, _sp_rel2            ; SPACE -> start the game
+        BIT     2, A
+        JP      NZ, ExitToDos           ; BREAK -> back to the DOS prompt
+        CALL    MarqueeStep
+        CALL    FrameDelay
+        JR      _sp_prs
 _sp_rel2:
+        ; leaving the splash retires the ticker for good, even if it
+        ; never finished its three passes - it belongs to the first
+        ; splash only, not to any later one
+        LD      A, 1
+        LD      (MARQ_DONE), A
+_sp_rel2w:
         LD      A, (KBD_CTL)
         BIT     7, A
-        JR      NZ, _sp_rel2
+        JR      NZ, _sp_rel2w
 
 RESTART:
         CALL    Cls
@@ -162,11 +183,23 @@ MainLoop:
         OR      A
         CALL    Z, InitWave
 _ml_nowave:
+        LD      A, (KBD_CTL)
+        BIT     2, A
+        JP      NZ, Splash              ; BREAK -> abandon the game, back to splash
         LD      A, (GAME_OVER)
         OR      A
         JP      NZ, GameOver
         CALL    FrameDelay
         JP      MainLoop
+
+; ============================================================
+; ExitToDos - hand the machine back to LDOS/TRSDOS. The game
+; runs with interrupts off and its own stack; 402DH is the
+; standard DOS re-entry on Model I and III and re-inits both.
+; ============================================================
+ExitToDos:
+        EI
+        JP      402DH
 
 ; ============================================================
 ; Cls - clear whole screen
@@ -313,6 +346,98 @@ TXT_P20:
         DB      '= 20 POINTS'
 TXT_P10:
         DB      '= 10 POINTS'
+TXT_MARQ:
+        DB      'INSPIRED BY SPACE INVADERS & BIG FIVE GAMES, 2024-2026 BY TIM WALTER & CLAUDE'
+MARQ_LEN        EQU     $ - TXT_MARQ    ; 77
+MARQ_UNIT       EQU     MARQ_LEN + 32   ; message + the 32 blank gap behind it
+MARQ_END        EQU     64 + 3 * MARQ_UNIT
+
+; ============================================================
+; MarqueeStep - one frame of the credits ticker on row 0.
+;
+; Models an endless strip of three copies of the message, each
+; followed by 32 blanks, sliding in from the right. Column c
+; shows strip index (s - 64 + c), so at s=1 the first character
+; sits at column 63 and the strip has fully passed at MARQ_END.
+;
+; All 64 columns are rewritten every frame - never cleared first,
+; so there is no blank intermediate state and no flicker.
+; ============================================================
+MarqueeStep:
+        LD      A, (MARQ_DONE)
+        OR      A
+        RET     NZ
+        ; half speed: act on every second call only. Skipping the
+        ; redraw leaves the row untouched, so this costs no flicker,
+        ; and the keyboard keeps being polled every frame.
+        LD      A, (MARQ_TICK)
+        INC     A
+        AND     1
+        LD      (MARQ_TICK), A
+        RET     NZ
+        LD      DE, MARQ_BUF            ; compose off-screen first
+        LD      HL, (MARQ_S)
+        LD      BC, 64
+        OR      A
+        SBC     HL, BC                  ; HL = strip index of column 0 (signed)
+        LD      B, 64
+_mq_col:
+        PUSH    BC
+        PUSH    DE
+        PUSH    HL
+        CALL    MarqChar                ; A = character at strip index HL
+        POP     HL
+        POP     DE
+        LD      (DE), A
+        INC     DE
+        INC     HL
+        POP     BC
+        DJNZ    _mq_col
+        ; single burst to video RAM: 64 bytes of LDIR is ~0.7ms, far
+        ; too brief for the beam to catch a half-shifted row
+        LD      HL, MARQ_BUF
+        LD      DE, SCREEN              ; row 0, column 0
+        LD      BC, 64
+        LDIR
+        LD      HL, (MARQ_S)
+        INC     HL
+        LD      (MARQ_S), HL
+        LD      BC, MARQ_END
+        OR      A
+        SBC     HL, BC
+        RET     C
+        LD      A, 1                    ; third pass has left - gone for good
+        LD      (MARQ_DONE), A
+        RET
+
+; MarqChar - HL = strip index (signed). Returns the character in A.
+; Blank before the strip starts, after it ends, and inside a gap.
+MarqChar:
+        BIT     7, H
+        JR      NZ, _mq_blank           ; still off the right edge
+        LD      C, 0                    ; C = which copy of the message
+_mq_unit:
+        LD      DE, MARQ_UNIT
+        OR      A
+        SBC     HL, DE
+        JR      C, _mq_have             ; inside this copy's slot
+        INC     C
+        LD      A, C
+        CP      3
+        JR      NC, _mq_blank           ; past the third copy
+        JR      _mq_unit
+_mq_have:
+        ADD     HL, DE                  ; undo the overshoot: HL = 0..MARQ_UNIT-1
+        LD      A, L
+        CP      MARQ_LEN
+        JR      NC, _mq_blank           ; in the 32-blank gap
+        LD      DE, TXT_MARQ
+        ADD     HL, DE
+        LD      A, (HL)
+        RET
+_mq_blank:
+        LD      A, BLANK
+        RET
 
 ; DrawTableSprite - splash helper: blit invader type E (0..2),
 ; state 0 / ysub 0, at B=row (2 rows), C=col (5 chars)
@@ -1888,6 +2013,10 @@ MARCH_IX:       DB      0
 WAVE_NUM:       DB      0
 FORM_ACC:       DW      0
 HISCORE_D:      DB      0, 0, 0, 0
+MARQ_S:         DW      0               ; ticker position along the strip
+MARQ_DONE:      DB      0               ; 1 once the third pass has left
+MARQ_TICK:      DB      0               ; frame divider - ticker runs at half rate
+MARQ_BUF:       DS      64              ; row composed here, then blitted
 EXPL_TBL:                               ; NEXPL x (timer,stage,row,col,kind)
         DB      0, 0, 0, 0, 0
         DB      0, 0, 0, 0, 0
